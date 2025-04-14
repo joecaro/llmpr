@@ -249,8 +249,12 @@ You can use markdown formatting including:
 	}
 }
 
-// Check if this is the main module
-const isMainModule = typeof require !== 'undefined' && require.main === module;
-if (isMainModule) {
-	main()
+// Check if this is the main module - ESM compatible check
+// In ESM modules, import.meta.url is available
+if (import.meta.url === `file://${process.argv[1]}` || process.argv[1].endsWith(process.argv[1])) {
+	logger.info('Starting LLMPR...')
+	main().catch(error => {
+		logger.error(`An error occurred: ${error.message}`)
+		process.exit(1)
+	})
 } 
