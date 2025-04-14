@@ -90,7 +90,3 @@ llmpr --silent
 - **Progress Indicators**: Loading spinners show you what's happening
 - **API Response Logging**: Show detailed information about API calls with the `--verbose` flag
 - **Formatted Output**: Clean, organized PR descriptions
-
-## License
-
-ISC 
