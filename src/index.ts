@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { exec } from 'child_process'
-import { readdirSync, statSync, writeFileSync } from 'fs'
+import { readdirSync, statSync, writeFileSync, readFileSync } from 'fs'
 import path from 'path'
 import axios from 'axios'
 import { program } from 'commander'
@@ -9,6 +9,15 @@ import chalk from 'chalk'
 import ora from 'ora'
 import boxen from 'boxen'
 import figures from 'figures'
+import { fileURLToPath } from 'url'
+import { dirname, join } from 'path'
+
+// Get version from package.json
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const packageJsonPath = join(__dirname, '..', 'package.json')
+const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'))
+const VERSION = packageJson.version
 
 // Terminal colors and styles
 const colors = {
@@ -67,7 +76,7 @@ const logger = {
 
 // Setup command line options
 program
-	.version('1.0.0')
+	.version(VERSION)
 	.option('-b, --base <branch>', 'base branch to compare against', 'main')
 	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-4o-mini')
 	.option('-o, --output <file>', 'output file for PR description')
@@ -198,7 +207,7 @@ export async function main() {
 		// Clear console and show banner
 		if (!options.silent) {
 			logger.clear()
-			logger.box(colors.primary.bold('LLMPR') + '\n' + colors.info('AI-powered PR descriptions'), 'v1.0.0')
+			logger.box(colors.primary.bold('LLMPR') + '\n' + colors.info('AI-powered PR descriptions'), `v${VERSION}`)
 		}
 
 		// Get diff and directory structure
