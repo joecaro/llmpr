@@ -4,7 +4,7 @@
   "description": "CLI tool for creating PR descriptions using OpenAI",
   "main": "dist/index.js",
   "bin": {
-    "llmpr": "./dist/index.js"
+    "llmpr": "dist/index.js"
   },
   "scripts": {
     "start": "node dist/index.js",
@@ -40,5 +40,13 @@
     "figures": "^6.1.0",
     "log-update": "^6.1.0",
     "ora": "^8.2.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joecaro/llmpr.git"
+  },
+  "bugs": {
+    "url": "https://github.com/joecaro/llmpr/issues"
+  },
+  "homepage": "https://github.com/joecaro/llmpr#readme"
 }
