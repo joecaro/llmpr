@@ -171,7 +171,8 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const prDescription = `${{ steps.generate.outputs.description }}`;
+            const fs = require('fs');
+            const prDescription = fs.readFileSync('pr_description.md', 'utf8');
             
             await github.rest.pulls.update({
               owner: context.repo.owner,
