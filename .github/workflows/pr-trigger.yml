@@ -1,0 +1,11 @@
+name: PR Description Generator
+
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  generate-description:
+    uses: ./.github/workflows/llmpr-action.yml
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }} 

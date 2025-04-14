@@ -1,0 +1,28 @@
+name: Manual PR Description Generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      base-branch:
+        description: 'Base branch to compare against'
+        required: true
+        default: 'main'
+      model:
+        description: 'OpenAI model'
+        required: false
+        default: 'gpt-4'
+      verbose:
+        description: 'Enable verbose logging'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  generate-description:
+    uses: ./.github/workflows/llmpr-action.yml
+    with:
+      base-branch: ${{ inputs.base-branch }}
+      model: ${{ inputs.model }}
+      verbose: ${{ inputs.verbose }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }} 
