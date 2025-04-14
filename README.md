@@ -178,3 +178,13 @@ jobs:
 ```
 
 This allows for easy integration with your existing CI/CD pipelines.
+
+### Comment-Based Trigger
+
+You can also add a comment trigger to generate PR descriptions on demand:
+
+1. Add the provided `comment-trigger.yml` workflow to your repository
+2. On any PR, add a comment with `/generate-pr-description`
+3. The workflow will automatically generate and update the PR description
+
+This is useful for regenerating descriptions or generating them for PRs that were created before the automatic trigger was set up.
