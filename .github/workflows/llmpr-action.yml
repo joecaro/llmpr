@@ -35,6 +35,11 @@ jobs:
         with:
           fetch-depth: 0
       
+      - name: Fetch base branch
+        run: |
+          git fetch origin ${{ inputs.base-branch || 'main' }}:refs/remotes/origin/${{ inputs.base-branch || 'main' }}
+          git branch -a
+      
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -54,7 +59,7 @@ jobs:
           fi
           
           # Build the command with optional flags
-          CMD="llmpr --base $BASE_BRANCH --output pr_description.md"
+          CMD="llmpr --base origin/$BASE_BRANCH --output pr_description.md"
           
           # Add model flag if specified
           if [[ "${{ inputs.model }}" != "gpt-4" ]]; then
