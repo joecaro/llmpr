@@ -1,0 +1,64 @@
+name: Generate PR Description
+
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  generate-pr-description:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for diff
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Install llmpr globally
+        run: npm install -g .
+      
+      - name: Generate PR description
+        id: generate
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # Set git config for the action
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          
+          # Generate PR description to a file
+          llmpr -b $BASE_BRANCH -o pr_description.md
+          
+          # Read the generated description to a variable
+          PR_DESCRIPTION=$(cat pr_description.md)
+          
+          # Save the description to GitHub outputs (multiline)
+          echo "description<<EOF" >> $GITHUB_OUTPUT
+          echo "$PR_DESCRIPTION" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: Update PR description
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prDescription = `${{ steps.generate.outputs.description }}`;
+            
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              body: prDescription
+            }); 
