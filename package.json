@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "CLI tool for creating PR descriptions using OpenAI",
   "main": "dist/index.js",
+  "type": "module",
   "bin": {
     "llmpr": "dist/index.js"
   },
@@ -10,7 +11,8 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "build": "tsc",
-    "test": "jest",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config=jest.config.json",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config=jest.config.json --coverage",
     "prepare": "npm run build",
     "prepublishOnly": "npm test"
   },
@@ -24,8 +26,12 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "@babel/core": "^7.26.10",
+    "@babel/preset-env": "^7.26.9",
+    "@babel/preset-typescript": "^7.27.0",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.14.1",
+    "babel-jest": "^29.7.0",
     "jest": "^29.7.0",
     "ts-jest": "^29.3.2",
     "ts-node": "^10.9.2",

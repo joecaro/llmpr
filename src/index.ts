@@ -9,7 +9,6 @@ import chalk from 'chalk'
 import ora from 'ora'
 import boxen from 'boxen'
 import figures from 'figures'
-import logUpdate from 'log-update'
 
 // Terminal colors and styles
 const colors = {
@@ -79,7 +78,7 @@ program
 const options = program.opts()
 
 // Get API key from environment variable or prompt the user
-function getApiKey(): string {
+export function getApiKey(): string {
 	const apiKey = process.env.OPENAI_API_KEY
 	if (!apiKey) {
 		logger.error('OPENAI_API_KEY environment variable is not set')
@@ -89,7 +88,7 @@ function getApiKey(): string {
 	return apiKey
 }
 
-function getGitDiff(): Promise<string> {
+export function getGitDiff(): Promise<string> {
 	const spinner = ora({
 		text: `Getting diff against ${colors.highlight(options.base)}...`,
 		spinner: 'dots'
@@ -109,7 +108,7 @@ function getGitDiff(): Promise<string> {
 	})
 }
 
-function getDirectoryStructure(dir: string): Array<{ name: string, isDir: boolean }> {
+export function getDirectoryStructure(dir: string): Array<{ name: string, isDir: boolean }> {
 	const spinner = ora({
 		text: 'Analyzing repository structure...',
 		spinner: 'dots'
@@ -128,7 +127,7 @@ function getDirectoryStructure(dir: string): Array<{ name: string, isDir: boolea
 	}
 }
 
-async function sendPromptToOpenAI(prompt: string): Promise<string> {
+export async function sendPromptToOpenAI(prompt: string): Promise<string> {
 	const apiKey = getApiKey()
 	const spinner = ora({
 		text: `Generating PR description using ${colors.highlight(options.model)}...`,
@@ -177,7 +176,7 @@ async function sendPromptToOpenAI(prompt: string): Promise<string> {
 	}
 }
 
-async function main() {
+export async function main() {
 	try {
 		// Clear console and show banner
 		if (!options.silent) {
@@ -250,4 +249,8 @@ You can use markdown formatting including:
 	}
 }
 
-main() 
+// Check if this is the main module
+const isMainModule = typeof require !== 'undefined' && require.main === module;
+if (isMainModule) {
+	main()
+} 
