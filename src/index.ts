@@ -169,7 +169,24 @@ export async function sendPromptToOpenAI(prompt: string): Promise<string> {
 			logger.info(`Duration: ${colors.highlight(duration + 's')}`)
 		}
 
-		return response.data.choices[0].message.content.trim()
+		// Extract content and strip markdown code block delimiters if present
+		let content = response.data.choices[0].message.content.trim()
+		// Remove markdown code block syntax if it exists
+		if (content.startsWith('```') && content.includes('\n')) {
+			const lines = content.split('\n')
+			if (lines[0].startsWith('```') && lines[lines.length - 1] === '```') {
+				// Remove first and last lines if they're backticks
+				content = lines.slice(1, lines.length - 1).join('\n')
+			} else if (lines[0].startsWith('```')) {
+				// Find the ending backticks
+				const endIndex = lines.findIndex((line: string, i: number) => i > 0 && line === '```')
+				if (endIndex !== -1) {
+					content = lines.slice(1, endIndex).join('\n')
+				}
+			}
+		}
+		
+		return content
 	} catch (error: any) {
 		spinner.fail('Failed to generate PR description')
 		throw new Error(`OpenAI API Error: ${error.response?.data?.error?.message || error.message}`)
