@@ -1,0 +1,93 @@
+name: LLMPR GitHub Action
+
+on:
+  workflow_call:
+    inputs:
+      base-branch:
+        description: 'The base branch to compare against'
+        required: false
+        default: 'main'
+        type: string
+      model:
+        description: 'The OpenAI model to use'
+        required: false
+        default: 'gpt-4'
+        type: string
+      verbose:
+        description: 'Enable verbose logging'
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      OPENAI_API_KEY:
+        required: true
+        description: 'OpenAI API key'
+
+jobs:
+  generate-pr-description:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install llmpr
+        run: npm install -g llmpr
+      
+      - name: Generate PR description
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          # Determine the base branch
+          BASE_BRANCH="${{ inputs.base-branch }}"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
+          fi
+          
+          # Build the command with optional flags
+          CMD="llmpr --base $BASE_BRANCH --output pr_description.md"
+          
+          # Add model flag if specified
+          if [[ "${{ inputs.model }}" != "gpt-4" ]]; then
+            CMD="$CMD --model ${{ inputs.model }}"
+          fi
+          
+          # Add verbose flag if enabled
+          if [[ "${{ inputs.verbose }}" == "true" ]]; then
+            CMD="$CMD --verbose"
+          fi
+          
+          # Run the command
+          echo "Running: $CMD"
+          $CMD
+      
+      - name: Update PR description
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const prDescription = fs.readFileSync('pr_description.md', 'utf8');
+            
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              body: prDescription
+            });
+      
+      - name: Output PR description
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "Generated PR description:"
+          cat pr_description.md 
