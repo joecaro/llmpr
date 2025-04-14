@@ -198,7 +198,7 @@ export async function main() {
 		// Clear console and show banner
 		if (!options.silent) {
 			logger.clear()
-			logger.box(colors.primary.bold('LLMPR') + '\n' + colors.info('AI-powered PR descriptions'), 'v1.0.0')
+			logger.box(colors.primary.bold('LLMPR') + '\n' + colors.info('AI-powered PR descriptions'), 'v1.0.2')
 		}
 
 		// Get diff and directory structure
