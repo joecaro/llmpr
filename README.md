@@ -90,3 +90,91 @@ llmpr --silent
 - **Progress Indicators**: Loading spinners show you what's happening
 - **API Response Logging**: Show detailed information about API calls with the `--verbose` flag
 - **Formatted Output**: Clean, organized PR descriptions
+
+## GitHub Action Integration
+
+llmpr can be used as a GitHub Action to automatically generate PR descriptions when new pull requests are created.
+
+### Setup
+
+1. Add your OpenAI API key to GitHub Secrets as `OPENAI_API_KEY`
+2. Use our pre-configured workflow file or create your own
+
+### Usage Example
+
+Add this workflow to your repository at `.github/workflows/pr-description.yml`:
+
+```yaml
+name: Generate PR Description
+
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  generate-pr-description:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install llmpr
+        run: npm install -g llmpr
+      
+      - name: Generate PR description
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          llmpr --base ${{ github.event.pull_request.base.ref }} --output pr_description.md
+      
+      - name: Update PR description
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const prDescription = fs.readFileSync('pr_description.md', 'utf8');
+            
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              body: prDescription
+            });
+```
+
+For more detailed setup instructions, see [GITHUB_ACTION_SETUP.md](./GITHUB_ACTION_SETUP.md).
+
+### Reusable Workflow
+
+We also provide a reusable workflow that can be called from your own workflows:
+
+```yaml
+name: My PR Description Workflow
+
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  call-llmpr-action:
+    uses: yourusername/llmpr/.github/workflows/llmpr-action.yml@main
+    with:
+      base-branch: main
+      model: gpt-4
+      verbose: false
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+```
+
+This allows for easy integration with your existing CI/CD pipelines.
