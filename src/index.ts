@@ -255,34 +255,79 @@ export async function sendPromptToOpenAI(prompt: string): Promise<string> {
 			spinner.start()
 		}
 
+		// First round - send initial prompt
 		const startTime = Date.now()
-		const response = await axios.post(
-			'https://api.openai.com/v1/chat/completions',
-			{
-				model: options.model,
-				messages: [{ role: 'system', content: prompt }]
-			},
-			{
-				headers: { 'Authorization': `Bearer ${apiKey}` }
+		let response = await callOpenAI(apiKey, prompt)
+		let content = response.data.choices[0].message.content.trim()
+		
+		// Check if the LLM is requesting more context
+		const maxRounds = 3
+		let currentRound = 1
+		
+		while (currentRound < maxRounds) {
+			// Look for file context requests in the format: [NEED_CONTEXT:filepath]
+			const contextRequests = [...content.matchAll(/\[NEED_CONTEXT:([^\]]+)\]/g)]
+			
+			if (contextRequests.length === 0) {
+				break // No more context needed
 			}
-		)
+			
+			spinner.text = `Round ${currentRound + 1}/${maxRounds}: Fetching additional context...`
+			
+			// Process all context requests
+			const additionalContext = await Promise.all(
+				contextRequests.map(async match => {
+					const filepath = match[1].trim()
+					try {
+						const fileContent = await readFileContent(filepath)
+						return `File content for ${filepath}:\n\`\`\`\n${fileContent}\n\`\`\``
+					} catch (error: unknown) {
+						const errorMessage = error instanceof Error ? error.message : String(error)
+						return `Error reading ${filepath}: ${errorMessage}`
+					}
+				})
+			)
+			
+			// Build follow-up prompt
+			const followUpPrompt = `
+You previously requested additional context to complete the PR description.
+Here is the requested context:
+
+${additionalContext.join('\n\n')}
+
+Based on this additional information, please generate the complete PR description as requested originally.
+Do NOT request more context with [NEED_CONTEXT:filepath]. This is your final opportunity to generate the PR description.
+`
+			
+			// Send follow-up request
+			spinner.text = `Round ${currentRound + 1}/${maxRounds}: Generating improved PR description...`
+			response = await callOpenAI(apiKey, followUpPrompt, [
+				{ role: 'system', content: prompt },
+				{ role: 'assistant', content: content }
+			])
+			
+			// Update content with the new response
+			content = response.data.choices[0].message.content.trim()
+			currentRound++
+		}
+		
 		const endTime = Date.now()
 		const duration = ((endTime - startTime) / 1000).toFixed(2)
 
-		spinner.succeed(`PR description generated in ${colors.highlight(duration + 's')}`)
+		spinner.succeed(`PR description generated in ${colors.highlight(duration + 's')} after ${currentRound} round${currentRound === 1 ? '' : 's'}`)
 
 		// Log the response if verbose
 		if (options.verbose) {
 			logger.title('API Response')
 			logger.info(`Model: ${colors.highlight(options.model)}`)
-			logger.info(`Prompt tokens: ${colors.highlight(response.data.usage?.prompt_tokens?.toString() || 'unknown')}`)
-			logger.info(`Completion tokens: ${colors.highlight(response.data.usage?.completion_tokens?.toString() || 'unknown')}`)
-			logger.info(`Total tokens: ${colors.highlight(response.data.usage?.total_tokens?.toString() || 'unknown')}`)
+			logger.info(`Rounds of context: ${colors.highlight(currentRound.toString())}`)
 			logger.info(`Duration: ${colors.highlight(duration + 's')}`)
 		}
 
 		// Extract content and strip markdown code block delimiters if present
-		let content = response.data.choices[0].message.content.trim()
+		// Remove any remaining [NEED_CONTEXT:...] tags that weren't processed
+		content = content.replace(/\[NEED_CONTEXT:[^\]]+\]/g, '')
+		
 		// Remove markdown code block syntax if it exists
 		if (content.startsWith('```') && content.includes('\n')) {
 			const lines = content.split('\n')
@@ -299,10 +344,63 @@ export async function sendPromptToOpenAI(prompt: string): Promise<string> {
 		}
 		
 		return content
-	} catch (error: any) {
+	} catch (error: unknown) {
 		spinner.fail('Failed to generate PR description')
-		throw new Error(`OpenAI API Error: ${error.response?.data?.error?.message || error.message}`)
+		let errorMessage = 'Unknown error'
+		
+		if (error instanceof Error) {
+			errorMessage = error.message
+		} else if (error && typeof error === 'object') {
+			// Try to handle axios error structure
+			const axiosError = error as any
+			if (axiosError.response?.data?.error?.message) {
+				errorMessage = axiosError.response.data.error.message
+			}
+		} else {
+			errorMessage = String(error)
+		}
+		
+		throw new Error(`OpenAI API Error: ${errorMessage}`)
 	}
+}
+
+/**
+ * Helper function to call the OpenAI API
+ */
+async function callOpenAI(apiKey: string, content: string, previousMessages: any[] = []): Promise<any> {
+	// Construct messages array
+	const messages = previousMessages.length > 0 
+		? [...previousMessages, { role: 'user', content }]
+		: [{ role: 'system', content }]
+	
+	return axios.post(
+		'https://api.openai.com/v1/chat/completions',
+		{
+			model: options.model,
+			messages
+		},
+		{
+			headers: { 'Authorization': `Bearer ${apiKey}` }
+		}
+	)
+}
+
+/**
+ * Read file content safely
+ */
+async function readFileContent(filepath: string): Promise<string> {
+	// Ensure the filepath is relative to the workspace
+	const fullPath = path.isAbsolute(filepath) 
+		? filepath 
+		: path.join(process.cwd(), filepath)
+	
+	// Check if file exists
+	if (!statSync(fullPath, { throwIfNoEntry: false })) {
+		throw new Error(`File not found: ${filepath}`)
+	}
+	
+	// Read the file
+	return readFileSync(fullPath, 'utf8')
 }
 
 export async function main() {
@@ -365,6 +463,8 @@ You can use markdown formatting including:
 - Headings
 - Quotes
 ${options.style === 'verbose' ? '- Mermaid diagrams if applicable and if it would be very helpful' : ''}
+
+If you need to see the contents of any specific file to better understand the changes, you can request it by including [NEED_CONTEXT:filepath] in your response. For example, [NEED_CONTEXT:src/config.ts]. You can request up to 3 files for additional context.
 `
 		// Send to OpenAI and get response
 		const response = await sendPromptToOpenAI(initialPrompt)
@@ -384,8 +484,14 @@ ${options.style === 'verbose' ? '- Mermaid diagrams if applicable and if it woul
 				logger.info('Copy the text above for your PR description')
 				logger.info(`Tip: Use ${colors.highlight('llmpr -o pr.md')} to save to a file next time`)
 		}
-	} catch (error: any) {
-		logger.error(error.message || 'An unknown error occurred')
+	} catch (error: unknown) {
+		let errorMessage = 'An unknown error occurred'
+		if (error instanceof Error) {
+			errorMessage = error.message
+		} else if (error !== null && error !== undefined) {
+			errorMessage = String(error)
+		}
+		logger.error(errorMessage)
 		process.exit(1)
 	}
 }
