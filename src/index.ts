@@ -451,6 +451,22 @@ ${options.style === 'verbose'
 4. Any important notes or warnings`
 }
 
+Your goal is to make a PR that is the gold standard of PRs and is very clear, explains the most important details, and assists with any engineer that reads it.
+
+${options.style === 'verbose' 
+	? `Make this PR stand out:
+- Use before/after code snippet comparisons when showing important changes
+- Create visual Mermaid diagrams that illustrate architecture changes or data flows
+- Highlight key technical decisions and explain the reasoning behind them
+- Use clear, engaging section headers
+- Format code examples with proper syntax highlighting
+- Explain complex changes in simple terms, then follow with technical details
+- Use tables to compare features or parameters when appropriate
+- Link related concepts together for better understanding
+- Start with a concise but powerful executive summary that captures the essence of the changes
+- Use visual separation (horizontal rules, headings) to organize sections logically`
+	: ``}
+
 The PR description should be in markdown format.
 
 The PR description should be no more than ${options.maxLength} words.
@@ -462,7 +478,68 @@ You can use markdown formatting including:
 - Bold and italic text
 - Headings
 - Quotes
-${options.style === 'verbose' ? '- Mermaid diagrams if applicable and if it would be very helpful' : ''}
+${options.style === 'verbose' ? `- Mermaid diagrams
+- Tables
+- Emojis (sparingly)
+- Collapsible sections for optional details` : ''}
+
+${options.style === 'verbose' 
+	? `For code snippets:
+- Show the most important changes, not all changes
+- Use diff syntax with + and - when showing before/after
+- Focus on readable examples that demonstrate the key concepts
+- Always include the language for proper syntax highlighting (e.g. \`\`\`typescript)
+
+For diagrams:
+- Use Mermaid diagrams to show architecture, workflows, or state changes
+- Keep diagrams focused on the changes being made
+- Use colors and styles to highlight important components
+- Include a brief explanation of what the diagram shows
+
+Example high-quality Mermaid diagram (if applicable):
+\`\`\`mermaid
+flowchart TD
+    A[Client] -->|API Request| B(API Gateway)
+    B -->|Route Request| C{Auth Service}
+    C -->|Validate| D[User Service]
+    C -->|Token| E[Permission Service]
+    B -->|Authorized Request| F[Feature Service]
+    style A fill:#f9f,stroke:#333,stroke-width:2px
+    style F fill:#bbf,stroke:#33f,stroke-width:4px
+\`\`\`
+
+Example high-quality code snippet (if applicable):
+\`\`\`typescript
+// BEFORE: Inefficient implementation
+function processData(items: Item[]): Result[] {
+  const results: Result[] = [];
+  for (const item of items) {
+    // Process each item sequentially with multiple operations
+    const temp = transform(item);
+    const validated = validate(temp);
+    results.push(finalize(validated));
+  }
+  return results;
+}
+
+// AFTER: Optimized implementation with better error handling
+function processData(items: Item[]): Result[] {
+  return items
+    .map(transform)
+    .filter(item => {
+      try {
+        return validate(item);
+      } catch (error) {
+        logger.warn(\`Invalid item: \${item.id}\`, error);
+        return false;
+      }
+    })
+    .map(finalize);
+}
+\`\`\``
+	: ``}
+
+*MAKE SURE NOT TO ADD ITEMS OR SECTIONS IF THEY ARE NOT NEEDED. I.E. A SIMPLE CHANGE DOESN'T NEED A DIAGRAM OR EXTENSIVE EXAMPLES*
 
 If you need to see the contents of any specific file to better understand the changes, you can request it by including [NEED_CONTEXT:filepath] in your response. For example, [NEED_CONTEXT:src/config.ts]. You can request up to 3 files for additional context.
 `
