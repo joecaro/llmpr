@@ -81,7 +81,7 @@ program
 	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-4o')
 	.option('-o, --output <file>', 'output file for PR description')
 	.option('-v, --verbose', 'show detailed logs and API responses')
-	.option('-s, --style <style>', 'PR description style (concise or verbose)', 'verbose')
+	.option('-s, --style <style>', 'PR description style (concise, standard, or verbose)', 'standard')
 	.option('-l, --max-length <words>', 'maximum length of PR description in words', '500')
 	.addHelpText('after', `
 Style options:
@@ -271,6 +271,11 @@ export async function sendPromptToOpenAI(prompt: string): Promise<string> {
 			if (contextRequests.length === 0) {
 				break // No more context needed
 			}
+
+			if (options.verbose) {
+				const requestedFiles = contextRequests.map(match => match[1].trim())
+				logger.info(`AI requested additional context for files (round ${currentRound + 1}): ${requestedFiles.join(', ')}`)
+			}
 			
 			spinner.text = `Round ${currentRound + 1}/${maxRounds}: Fetching additional context...`
 			
@@ -441,22 +446,20 @@ ${options.style === 'verbose'
 	? `Include:
 1. Detailed summary of changes
 2. Purpose and motivation for the PR
-3. Implementation details with relevant code snippets
-4. Architecture diagrams using Mermaid if applicable
-5. Any important notes, warnings, or future improvements`
+3. Implementation details (include code snippets or diagrams ONLY if they are necessary to clearly explain complex or important changes)
+4. Any important notes, warnings, or future improvements` 
 	: `Include:
 1. Summary of changes
 2. Purpose of the PR
 3. Key implementation details
-4. Any important notes or warnings`
-}
+4. Any important notes or warnings`}
 
 Your goal is to make a PR that is the gold standard of PRs and is very clear, explains the most important details, and assists with any engineer that reads it.
 
 ${options.style === 'verbose' 
 	? `Make this PR stand out:
-- Use before/after code snippet comparisons when showing important changes
-- Create visual Mermaid diagrams that illustrate architecture changes or data flows
+- Use before/after code snippet comparisons ONLY when they are needed to clarify important changes
+- Create visual Mermaid diagrams ONLY if they are necessary to explain architecture changes or data flows
 - Highlight key technical decisions and explain the reasoning behind them
 - Use clear, engaging section headers
 - Format code examples with proper syntax highlighting
@@ -473,25 +476,26 @@ The PR description should be no more than ${options.maxLength} words.
 
 You can use markdown formatting including:
 - Lists
-- Code blocks
+- Code blocks (only if needed)
 - Links
 - Bold and italic text
 - Headings
 - Quotes
-${options.style === 'verbose' ? `- Mermaid diagrams
+${options.style === 'verbose' ? `- Mermaid diagrams (only if needed)
 - Tables
 - Emojis (sparingly)
 - Collapsible sections for optional details` : ''}
 
 ${options.style === 'verbose' 
 	? `For code snippets:
+- Only include code snippets if they are necessary to explain a complex or important change
 - Show the most important changes, not all changes
 - Use diff syntax with + and - when showing before/after
 - Focus on readable examples that demonstrate the key concepts
-- Always include the language for proper syntax highlighting (e.g. \`\`\`typescript)
+- Always include the language for proper syntax highlighting (e.g. typescript)
 
 For diagrams:
-- Use Mermaid diagrams to show architecture, workflows, or state changes
+- Only include diagrams if they are necessary to explain architecture, workflows, or state changes
 - Keep diagrams focused on the changes being made
 - Use colors and styles to highlight important components
 - Include a brief explanation of what the diagram shows
@@ -536,13 +540,13 @@ function processData(items: Item[]): Result[] {
     })
     .map(finalize);
 }
-\`\`\``
-	: ``}
-
-*MAKE SURE NOT TO ADD ITEMS OR SECTIONS IF THEY ARE NOT NEEDED. I.E. A SIMPLE CHANGE DOESN'T NEED A DIAGRAM OR EXTENSIVE EXAMPLES*
-
-If you need to see the contents of any specific file to better understand the changes, you can request it by including [NEED_CONTEXT:filepath] in your response. For example, [NEED_CONTEXT:src/config.ts]. You can request up to 3 files for additional context.
+\`\`\`
 `
+: ''}
+
+*MAKE SURE NOT TO ADD ITEMS OR SECTIONS IF THEY ARE NOT NEEDED. I.E. A SIMPLE CHANGE DOESN'T NEED A DIAGRAM OR EXTENSIVE EXAMPLES. ONLY INCLUDE DIAGRAMS OR CODE SNIPPETS IF THEY ARE NECESSARY TO EXPLAIN THE CHANGES.*
+
+If you need to see the contents of any specific file to better understand the changes, you can request it by including [NEED_CONTEXT:filepath] in your response. For example, [NEED_CONTEXT:src/config.ts]. You can request up to 3 files for additional context.`;
 		// Send to OpenAI and get response
 		const response = await sendPromptToOpenAI(initialPrompt)
 		
