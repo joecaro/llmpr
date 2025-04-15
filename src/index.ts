@@ -78,12 +78,19 @@ const logger = {
 program
 	.version(VERSION)
 	.option('-b, --base <branch>', 'base branch to compare against', 'main')
-	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-4o-mini')
+	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-4o')
 	.option('-o, --output <file>', 'output file for PR description')
 	.option('-v, --verbose', 'show detailed logs and API responses')
-	.option('-s, --silent', 'minimize output, show only the final result')
+	.option('-s, --style <style>', 'PR description style (concise or verbose)', 'verbose')
+	.option('-l, --max-length <words>', 'maximum length of PR description in words', '500')
+	.addHelpText('after', `
+Style options:
+  - concise: Focus on summary, key details, and changes only
+  - verbose: Include code snippets and diagrams where appropriate
+`)
 	.parse(process.argv)
 
+// Remove the custom help text that always shows
 const options = program.opts()
 
 // Get API key from environment variable or prompt the user
@@ -117,19 +124,115 @@ export function getGitDiff(): Promise<string> {
 	})
 }
 
-export function getDirectoryStructure(dir: string): Array<{ name: string, isDir: boolean }> {
+export function getChangedFiles(): Promise<string[]> {
+	return new Promise((resolve, reject) => {
+		exec(`git diff --name-only ${options.base}`, (err, stdout, stderr) => {
+			if (err) {
+				reject(new Error(`Error getting changed files: ${stderr || err.message}`))
+				return
+			}
+			// Return list of changed file paths
+			resolve(stdout.trim().split('\n').filter(line => line.trim() !== ''))
+		})
+	})
+}
+
+export function getDirectoryStructure(dir: string, changedFiles: string[] = []): string {
 	const spinner = ora({
 		text: 'Analyzing repository structure...',
 		spinner: 'dots'
 	}).start()
 	
 	try {
-		const structure = readdirSync(dir).map(file => {
-			const fullPath = path.join(dir, file)
-			return { name: file, isDir: statSync(fullPath).isDirectory() }
+		// Extract the directories containing changed files
+		const changedDirs = new Set<string>()
+		
+		changedFiles.forEach(file => {
+			// Add all parent directories
+			let parentDir = path.dirname(file)
+			while (parentDir !== '.') {
+				changedDirs.add(parentDir)
+				parentDir = path.dirname(parentDir)
+			}
+			// Add root directory as well
+			changedDirs.add('.')
 		})
+		
+		const formatTree = (currentPath: string, prefix = '', depth = 0, maxDepth = 3): string => {
+			if (depth > maxDepth) {
+				return `${prefix}... (more items not shown)\n`
+			}
+			
+			const items = readdirSync(currentPath)
+				.filter(item => {
+					if (item.startsWith('.git')) return false // Skip .git directory
+					
+					const itemPath = path.join(currentPath, item)
+					const relativePath = path.relative(dir, itemPath)
+					const isDir = statSync(itemPath).isDirectory()
+					
+					// Include item if:
+					// 1. It's a changed file, or
+					// 2. It's a directory containing changed files
+					// 3. We're at depth 0 (root level files/folders are always shown)
+					if (isDir) {
+						return changedDirs.has(relativePath) || depth === 0
+					} else {
+						return changedFiles.includes(relativePath) || depth === 0
+					}
+				})
+				.sort((a, b) => {
+					// Sort directories first, then files
+					const aIsDir = statSync(path.join(currentPath, a)).isDirectory()
+					const bIsDir = statSync(path.join(currentPath, b)).isDirectory()
+					if (aIsDir && !bIsDir) return -1
+					if (!aIsDir && bIsDir) return 1
+					return a.localeCompare(b)
+				})
+
+			let result = ''
+			
+			items.forEach((item, index) => {
+				const isLast = index === items.length - 1
+				const itemPath = path.join(currentPath, item)
+				const isDir = statSync(itemPath).isDirectory()
+				
+				// Use '└── ' for the last item, '├── ' for others
+				const connector = isLast ? '└── ' : '├── '
+				
+				// Add folder/file indicator
+				const displayName = isDir ? `${item}/` : item
+				
+				// Highlight changed files
+				const relativePath = path.relative(dir, itemPath)
+				const isChanged = !isDir && changedFiles.includes(relativePath)
+				const formattedName = isChanged ? colors.highlight(displayName) : displayName
+				
+				result += `${prefix}${connector}${formattedName}\n`
+				
+				// Recursively process subdirectories
+				if (isDir) {
+					// For children of this item, add appropriate prefix
+					// '    ' for children of last item, '│   ' for others
+					const newPrefix = prefix + (isLast ? '    ' : '│   ')
+					result += formatTree(itemPath, newPrefix, depth + 1, maxDepth)
+				}
+			})
+			
+			return result
+		}
+		
+		// Get the base directory name
+		const rootDir = path.basename(dir)
+		
+		// Start with the root directory
+		let treeOutput = `${rootDir}/\n`
+		
+		// Add the tree structure
+		treeOutput += formatTree(dir)
+		
 		spinner.succeed('Repository structure analyzed')
-		return structure
+		return treeOutput
 	} catch (error) {
 		spinner.fail('Failed to analyze repository structure')
 		throw error
@@ -204,10 +307,10 @@ export async function sendPromptToOpenAI(prompt: string): Promise<string> {
 
 export async function main() {
 	try {
-		// Clear console and show banner
-		if (!options.silent) {
-			logger.clear()
-			logger.box(colors.primary.bold('LLMPR') + '\n' + colors.info('AI-powered PR descriptions'), `v${VERSION}`)
+		// Display options if verbose mode is enabled
+		if (options.verbose) {
+			logger.info(`PR style: ${colors.highlight(options.style)}`)
+			logger.info(`Max length: ${colors.highlight(options.maxLength)} words`)
 		}
 
 		// Get diff and directory structure
@@ -217,7 +320,11 @@ export async function main() {
 			process.exit(0)
 		}
 
-		const dirStructure = getDirectoryStructure(process.cwd())
+		// Get list of changed files from git
+		const changedFiles = await getChangedFiles()
+		
+		// Get directory structure, focusing on changed directories
+		const dirStructure = getDirectoryStructure(process.cwd(), changedFiles)
 
 		// Build the prompt
 		const initialPrompt = `
@@ -226,17 +333,29 @@ The diff from my branch compared to ${options.base} is:
 ${diff}
 
 The repository structure is:
-${JSON.stringify(dirStructure, null, 2)}
+\`\`\`
+${dirStructure}
+\`\`\`
 
-Write a complete, concise, and professional PR description including:
+Write a ${options.style} PR description${options.style === 'concise' ? ' focusing only on summary, key details, and changes' : ' including code snippets and diagrams where appropriate'}.
+
+${options.style === 'verbose' 
+	? `Include:
+1. Detailed summary of changes
+2. Purpose and motivation for the PR
+3. Implementation details with relevant code snippets
+4. Architecture diagrams using Mermaid if applicable
+5. Any important notes, warnings, or future improvements`
+	: `Include:
 1. Summary of changes
 2. Purpose of the PR
 3. Key implementation details
-4. Any important notes or warnings
+4. Any important notes or warnings`
+}
 
 The PR description should be in markdown format.
 
-The PR description should be no more than 100 words.
+The PR description should be no more than ${options.maxLength} words.
 
 You can use markdown formatting including:
 - Lists
@@ -245,7 +364,7 @@ You can use markdown formatting including:
 - Bold and italic text
 - Headings
 - Quotes
-- Mermaid diagrams if applicable and if it would be very helpful
+${options.style === 'verbose' ? '- Mermaid diagrams if applicable and if it would be very helpful' : ''}
 `
 		// Send to OpenAI and get response
 		const response = await sendPromptToOpenAI(initialPrompt)
@@ -255,19 +374,15 @@ You can use markdown formatting including:
 			writeFileSync(options.output, response)
 			logger.success(`PR description saved to ${colors.highlight(options.output)}`)
 			
-			if (!options.silent) {
 				logger.info(`Use ${colors.highlight(`cat ${options.output}`)} to view the content`)
-			}
 		} else {
 			logger.divider()
 			logger.title('Generated PR Description')
 			console.log(response)
 			logger.divider()
 			
-			if (!options.silent) {
 				logger.info('Copy the text above for your PR description')
 				logger.info(`Tip: Use ${colors.highlight('llmpr -o pr.md')} to save to a file next time`)
-			}
 		}
 	} catch (error: any) {
 		logger.error(error.message || 'An unknown error occurred')
