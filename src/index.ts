@@ -78,12 +78,19 @@ const logger = {
 program
 	.version(VERSION)
 	.option('-b, --base <branch>', 'base branch to compare against', 'main')
-	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-4o-mini')
+	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-4o')
 	.option('-o, --output <file>', 'output file for PR description')
 	.option('-v, --verbose', 'show detailed logs and API responses')
-	.option('-s, --silent', 'minimize output, show only the final result')
+	.option('-s, --style <style>', 'PR description style (concise or verbose)', 'verbose')
+	.option('-l, --max-length <words>', 'maximum length of PR description in words', '500')
+	.addHelpText('after', `
+Style options:
+  - concise: Focus on summary, key details, and changes only
+  - verbose: Include code snippets and diagrams where appropriate
+`)
 	.parse(process.argv)
 
+// Remove the custom help text that always shows
 const options = program.opts()
 
 // Get API key from environment variable or prompt the user
@@ -117,19 +124,115 @@ export function getGitDiff(): Promise<string> {
 	})
 }
 
-export function getDirectoryStructure(dir: string): Array<{ name: string, isDir: boolean }> {
+export function getChangedFiles(): Promise<string[]> {
+	return new Promise((resolve, reject) => {
+		exec(`git diff --name-only ${options.base}`, (err, stdout, stderr) => {
+			if (err) {
+				reject(new Error(`Error getting changed files: ${stderr || err.message}`))
+				return
+			}
+			// Return list of changed file paths
+			resolve(stdout.trim().split('\n').filter(line => line.trim() !== ''))
+		})
+	})
+}
+
+export function getDirectoryStructure(dir: string, changedFiles: string[] = []): string {
 	const spinner = ora({
 		text: 'Analyzing repository structure...',
 		spinner: 'dots'
 	}).start()
 	
 	try {
-		const structure = readdirSync(dir).map(file => {
-			const fullPath = path.join(dir, file)
-			return { name: file, isDir: statSync(fullPath).isDirectory() }
+		// Extract the directories containing changed files
+		const changedDirs = new Set<string>()
+		
+		changedFiles.forEach(file => {
+			// Add all parent directories
+			let parentDir = path.dirname(file)
+			while (parentDir !== '.') {
+				changedDirs.add(parentDir)
+				parentDir = path.dirname(parentDir)
+			}
+			// Add root directory as well
+			changedDirs.add('.')
 		})
+		
+		const formatTree = (currentPath: string, prefix = '', depth = 0, maxDepth = 3): string => {
+			if (depth > maxDepth) {
+				return `${prefix}... (more items not shown)\n`
+			}
+			
+			const items = readdirSync(currentPath)
+				.filter(item => {
+					if (item.startsWith('.git')) return false // Skip .git directory
+					
+					const itemPath = path.join(currentPath, item)
+					const relativePath = path.relative(dir, itemPath)
+					const isDir = statSync(itemPath).isDirectory()
+					
+					// Include item if:
+					// 1. It's a changed file, or
+					// 2. It's a directory containing changed files
+					// 3. We're at depth 0 (root level files/folders are always shown)
+					if (isDir) {
+						return changedDirs.has(relativePath) || depth === 0
+					} else {
+						return changedFiles.includes(relativePath) || depth === 0
+					}
+				})
+				.sort((a, b) => {
+					// Sort directories first, then files
+					const aIsDir = statSync(path.join(currentPath, a)).isDirectory()
+					const bIsDir = statSync(path.join(currentPath, b)).isDirectory()
+					if (aIsDir && !bIsDir) return -1
+					if (!aIsDir && bIsDir) return 1
+					return a.localeCompare(b)
+				})
+
+			let result = ''
+			
+			items.forEach((item, index) => {
+				const isLast = index === items.length - 1
+				const itemPath = path.join(currentPath, item)
+				const isDir = statSync(itemPath).isDirectory()
+				
+				// Use '└── ' for the last item, '├── ' for others
+				const connector = isLast ? '└── ' : '├── '
+				
+				// Add folder/file indicator
+				const displayName = isDir ? `${item}/` : item
+				
+				// Highlight changed files
+				const relativePath = path.relative(dir, itemPath)
+				const isChanged = !isDir && changedFiles.includes(relativePath)
+				const formattedName = isChanged ? colors.highlight(displayName) : displayName
+				
+				result += `${prefix}${connector}${formattedName}\n`
+				
+				// Recursively process subdirectories
+				if (isDir) {
+					// For children of this item, add appropriate prefix
+					// '    ' for children of last item, '│   ' for others
+					const newPrefix = prefix + (isLast ? '    ' : '│   ')
+					result += formatTree(itemPath, newPrefix, depth + 1, maxDepth)
+				}
+			})
+			
+			return result
+		}
+		
+		// Get the base directory name
+		const rootDir = path.basename(dir)
+		
+		// Start with the root directory
+		let treeOutput = `${rootDir}/\n`
+		
+		// Add the tree structure
+		treeOutput += formatTree(dir)
+		
 		spinner.succeed('Repository structure analyzed')
-		return structure
+		return treeOutput
 	} catch (error) {
 		spinner.fail('Failed to analyze repository structure')
 		throw error
@@ -152,34 +255,79 @@ export async function sendPromptToOpenAI(prompt: string): Promise<string> {
 			spinner.start()
 		}
 
+		// First round - send initial prompt
 		const startTime = Date.now()
-		const response = await axios.post(
-			'https://api.openai.com/v1/chat/completions',
-			{
-				model: options.model,
-				messages: [{ role: 'system', content: prompt }]
-			},
-			{
-				headers: { 'Authorization': `Bearer ${apiKey}` }
+		let response = await callOpenAI(apiKey, prompt)
+		let content = response.data.choices[0].message.content.trim()
+		
+		// Check if the LLM is requesting more context
+		const maxRounds = 3
+		let currentRound = 1
+		
+		while (currentRound < maxRounds) {
+			// Look for file context requests in the format: [NEED_CONTEXT:filepath]
+			const contextRequests = [...content.matchAll(/\[NEED_CONTEXT:([^\]]+)\]/g)]
+			
+			if (contextRequests.length === 0) {
+				break // No more context needed
 			}
-		)
+			
+			spinner.text = `Round ${currentRound + 1}/${maxRounds}: Fetching additional context...`
+			
+			// Process all context requests
+			const additionalContext = await Promise.all(
+				contextRequests.map(async match => {
+					const filepath = match[1].trim()
+					try {
+						const fileContent = await readFileContent(filepath)
+						return `File content for ${filepath}:\n\`\`\`\n${fileContent}\n\`\`\``
+					} catch (error: unknown) {
+						const errorMessage = error instanceof Error ? error.message : String(error)
+						return `Error reading ${filepath}: ${errorMessage}`
+					}
+				})
+			)
+			
+			// Build follow-up prompt
+			const followUpPrompt = `
+You previously requested additional context to complete the PR description.
+Here is the requested context:
+
+${additionalContext.join('\n\n')}
+
+Based on this additional information, please generate the complete PR description as requested originally.
+Do NOT request more context with [NEED_CONTEXT:filepath]. This is your final opportunity to generate the PR description.
+`
+			
+			// Send follow-up request
+			spinner.text = `Round ${currentRound + 1}/${maxRounds}: Generating improved PR description...`
+			response = await callOpenAI(apiKey, followUpPrompt, [
+				{ role: 'system', content: prompt },
+				{ role: 'assistant', content: content }
+			])
+			
+			// Update content with the new response
+			content = response.data.choices[0].message.content.trim()
+			currentRound++
+		}
+		
 		const endTime = Date.now()
 		const duration = ((endTime - startTime) / 1000).toFixed(2)
 
-		spinner.succeed(`PR description generated in ${colors.highlight(duration + 's')}`)
+		spinner.succeed(`PR description generated in ${colors.highlight(duration + 's')} after ${currentRound} round${currentRound === 1 ? '' : 's'}`)
 
 		// Log the response if verbose
 		if (options.verbose) {
 			logger.title('API Response')
 			logger.info(`Model: ${colors.highlight(options.model)}`)
-			logger.info(`Prompt tokens: ${colors.highlight(response.data.usage?.prompt_tokens?.toString() || 'unknown')}`)
-			logger.info(`Completion tokens: ${colors.highlight(response.data.usage?.completion_tokens?.toString() || 'unknown')}`)
-			logger.info(`Total tokens: ${colors.highlight(response.data.usage?.total_tokens?.toString() || 'unknown')}`)
+			logger.info(`Rounds of context: ${colors.highlight(currentRound.toString())}`)
 			logger.info(`Duration: ${colors.highlight(duration + 's')}`)
 		}
 
 		// Extract content and strip markdown code block delimiters if present
-		let content = response.data.choices[0].message.content.trim()
+		// Remove any remaining [NEED_CONTEXT:...] tags that weren't processed
+		content = content.replace(/\[NEED_CONTEXT:[^\]]+\]/g, '')
+		
 		// Remove markdown code block syntax if it exists
 		if (content.startsWith('```') && content.includes('\n')) {
 			const lines = content.split('\n')
@@ -196,18 +344,71 @@ export async function sendPromptToOpenAI(prompt: string): Promise<string> {
 		}
 		
 		return content
-	} catch (error: any) {
+	} catch (error: unknown) {
 		spinner.fail('Failed to generate PR description')
-		throw new Error(`OpenAI API Error: ${error.response?.data?.error?.message || error.message}`)
+		let errorMessage = 'Unknown error'
+		
+		if (error instanceof Error) {
+			errorMessage = error.message
+		} else if (error && typeof error === 'object') {
+			// Try to handle axios error structure
+			const axiosError = error as any
+			if (axiosError.response?.data?.error?.message) {
+				errorMessage = axiosError.response.data.error.message
+			}
+		} else {
+			errorMessage = String(error)
+		}
+		
+		throw new Error(`OpenAI API Error: ${errorMessage}`)
 	}
+}
+
+/**
+ * Helper function to call the OpenAI API
+ */
+async function callOpenAI(apiKey: string, content: string, previousMessages: any[] = []): Promise<any> {
+	// Construct messages array
+	const messages = previousMessages.length > 0 
+		? [...previousMessages, { role: 'user', content }]
+		: [{ role: 'system', content }]
+	
+	return axios.post(
+		'https://api.openai.com/v1/chat/completions',
+		{
+			model: options.model,
+			messages
+		},
+		{
+			headers: { 'Authorization': `Bearer ${apiKey}` }
+		}
+	)
+}
+
+/**
+ * Read file content safely
+ */
+async function readFileContent(filepath: string): Promise<string> {
+	// Ensure the filepath is relative to the workspace
+	const fullPath = path.isAbsolute(filepath) 
+		? filepath 
+		: path.join(process.cwd(), filepath)
+	
+	// Check if file exists
+	if (!statSync(fullPath, { throwIfNoEntry: false })) {
+		throw new Error(`File not found: ${filepath}`)
+	}
+	
+	// Read the file
+	return readFileSync(fullPath, 'utf8')
 }
 
 export async function main() {
 	try {
-		// Clear console and show banner
-		if (!options.silent) {
-			logger.clear()
-			logger.box(colors.primary.bold('LLMPR') + '\n' + colors.info('AI-powered PR descriptions'), `v${VERSION}`)
+		// Display options if verbose mode is enabled
+		if (options.verbose) {
+			logger.info(`PR style: ${colors.highlight(options.style)}`)
+			logger.info(`Max length: ${colors.highlight(options.maxLength)} words`)
 		}
 
 		// Get diff and directory structure
@@ -217,7 +418,11 @@ export async function main() {
 			process.exit(0)
 		}
 
-		const dirStructure = getDirectoryStructure(process.cwd())
+		// Get list of changed files from git
+		const changedFiles = await getChangedFiles()
+		
+		// Get directory structure, focusing on changed directories
+		const dirStructure = getDirectoryStructure(process.cwd(), changedFiles)
 
 		// Build the prompt
 		const initialPrompt = `
@@ -226,17 +431,45 @@ The diff from my branch compared to ${options.base} is:
 ${diff}
 
 The repository structure is:
-${JSON.stringify(dirStructure, null, 2)}
+\`\`\`
+${dirStructure}
+\`\`\`
 
-Write a complete, concise, and professional PR description including:
+Write a ${options.style} PR description${options.style === 'concise' ? ' focusing only on summary, key details, and changes' : ' including code snippets and diagrams where appropriate'}.
+
+${options.style === 'verbose' 
+	? `Include:
+1. Detailed summary of changes
+2. Purpose and motivation for the PR
+3. Implementation details with relevant code snippets
+4. Architecture diagrams using Mermaid if applicable
+5. Any important notes, warnings, or future improvements`
+	: `Include:
 1. Summary of changes
 2. Purpose of the PR
 3. Key implementation details
-4. Any important notes or warnings
+4. Any important notes or warnings`
+}
+
+Your goal is to make a PR that is the gold standard of PRs and is very clear, explains the most important details, and assists with any engineer that reads it.
+
+${options.style === 'verbose' 
+	? `Make this PR stand out:
+- Use before/after code snippet comparisons when showing important changes
+- Create visual Mermaid diagrams that illustrate architecture changes or data flows
+- Highlight key technical decisions and explain the reasoning behind them
+- Use clear, engaging section headers
+- Format code examples with proper syntax highlighting
+- Explain complex changes in simple terms, then follow with technical details
+- Use tables to compare features or parameters when appropriate
+- Link related concepts together for better understanding
+- Start with a concise but powerful executive summary that captures the essence of the changes
+- Use visual separation (horizontal rules, headings) to organize sections logically`
+	: ``}
 
 The PR description should be in markdown format.
 
-The PR description should be no more than 100 words.
+The PR description should be no more than ${options.maxLength} words.
 
 You can use markdown formatting including:
 - Lists
@@ -245,7 +478,70 @@ You can use markdown formatting including:
 - Bold and italic text
 - Headings
 - Quotes
-- Mermaid diagrams if applicable and if it would be very helpful
+${options.style === 'verbose' ? `- Mermaid diagrams
+- Tables
+- Emojis (sparingly)
+- Collapsible sections for optional details` : ''}
+
+${options.style === 'verbose' 
+	? `For code snippets:
+- Show the most important changes, not all changes
+- Use diff syntax with + and - when showing before/after
+- Focus on readable examples that demonstrate the key concepts
+- Always include the language for proper syntax highlighting (e.g. \`\`\`typescript)
+
+For diagrams:
+- Use Mermaid diagrams to show architecture, workflows, or state changes
+- Keep diagrams focused on the changes being made
+- Use colors and styles to highlight important components
+- Include a brief explanation of what the diagram shows
+
+Example high-quality Mermaid diagram (if applicable):
+\`\`\`mermaid
+flowchart TD
+    A[Client] -->|API Request| B(API Gateway)
+    B -->|Route Request| C{Auth Service}
+    C -->|Validate| D[User Service]
+    C -->|Token| E[Permission Service]
+    B -->|Authorized Request| F[Feature Service]
+    style A fill:#f9f,stroke:#333,stroke-width:2px
+    style F fill:#bbf,stroke:#33f,stroke-width:4px
+\`\`\`
+
+Example high-quality code snippet (if applicable):
+\`\`\`typescript
+// BEFORE: Inefficient implementation
+function processData(items: Item[]): Result[] {
+  const results: Result[] = [];
+  for (const item of items) {
+    // Process each item sequentially with multiple operations
+    const temp = transform(item);
+    const validated = validate(temp);
+    results.push(finalize(validated));
+  }
+  return results;
+}
+
+// AFTER: Optimized implementation with better error handling
+function processData(items: Item[]): Result[] {
+  return items
+    .map(transform)
+    .filter(item => {
+      try {
+        return validate(item);
+      } catch (error) {
+        logger.warn(\`Invalid item: \${item.id}\`, error);
+        return false;
+      }
+    })
+    .map(finalize);
+}
+\`\`\``
+	: ``}
+
+*MAKE SURE NOT TO ADD ITEMS OR SECTIONS IF THEY ARE NOT NEEDED. I.E. A SIMPLE CHANGE DOESN'T NEED A DIAGRAM OR EXTENSIVE EXAMPLES*
+
+If you need to see the contents of any specific file to better understand the changes, you can request it by including [NEED_CONTEXT:filepath] in your response. For example, [NEED_CONTEXT:src/config.ts]. You can request up to 3 files for additional context.
 `
 		// Send to OpenAI and get response
 		const response = await sendPromptToOpenAI(initialPrompt)
@@ -255,22 +551,24 @@ You can use markdown formatting including:
 			writeFileSync(options.output, response)
 			logger.success(`PR description saved to ${colors.highlight(options.output)}`)
 			
-			if (!options.silent) {
 				logger.info(`Use ${colors.highlight(`cat ${options.output}`)} to view the content`)
-			}
 		} else {
 			logger.divider()
 			logger.title('Generated PR Description')
 			console.log(response)
 			logger.divider()
 			
-			if (!options.silent) {
 				logger.info('Copy the text above for your PR description')
 				logger.info(`Tip: Use ${colors.highlight('llmpr -o pr.md')} to save to a file next time`)
-			}
 		}
-	} catch (error: any) {
-		logger.error(error.message || 'An unknown error occurred')
+	} catch (error: unknown) {
+		let errorMessage = 'An unknown error occurred'
+		if (error instanceof Error) {
+			errorMessage = error.message
+		} else if (error !== null && error !== undefined) {
+			errorMessage = String(error)
+		}
+		logger.error(errorMessage)
 		process.exit(1)
 	}
 }

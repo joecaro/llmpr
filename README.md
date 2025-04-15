@@ -1,6 +1,17 @@
-# llmpr
+# LLMPR
 
-A CLI tool for generating Pull Request descriptions using OpenAI.
+> AI-powered Pull Request descriptions with one command
+
+LLMPR generates professional PR descriptions from your Git changes using OpenAI's language models.
+
+## Features
+
+- 🔄 **Git Integration**: Analyzes your current branch changes
+- 🎨 **Two Styles**: Choose concise or verbose descriptions
+- 📊 **Smart Visualizations**: Generates diagrams and code comparisons when needed
+- 🔍 **Context-Aware**: Can request specific file contents for better understanding
+- 📁 **Directory Visualization**: Shows repository structure with focus on changed files
+- 📏 **Customizable Length**: Control the maximum size of your PR descriptions
 
 ## Installation
 
@@ -37,72 +48,64 @@ echo 'export OPENAI_API_KEY=your_api_key' >> ~/.zshrc
 source ~/.zshrc
 ```
 
+## Quick Start
+
+1. Set your OpenAI API key:
+   ```bash
+   export OPENAI_API_KEY=your_api_key
+   ```
+
+2. Run in your Git repository:
+   ```bash
+   llmpr
+   ```
+
 ## Usage
 
-Navigate to your Git repository and run:
-
-```bash
-llmpr
 ```
-
-This will generate a PR description based on the diff between your current branch and main.
+llmpr [options]
+```
 
 ### Options
 
-- `-b, --base <branch>`: Specify the base branch to compare against (default: "main")
-- `-m, --model <model>`: Specify the OpenAI model to use (default: "gpt-4")
-- `-o, --output <file>`: Save the PR description to a file instead of printing to console
-- `-v, --verbose`: Show detailed logs including API requests and responses
-- `-s, --silent`: Minimize output, show only the final result
-- `-h, --help`: Display help information
-- `-V, --version`: Display version information
+| Option | Description |
+|--------|-------------|
+| `-b, --base <branch>` | Base branch to compare against (default: "main") |
+| `-m, --model <model>` | OpenAI model to use (default: "gpt-4o") |
+| `-o, --output <file>` | Save PR description to file |
+| `-v, --verbose` | Show detailed logs and API responses |
+| `-s, --style <style>` | PR style: "concise" or "verbose" (default: "verbose") |
+| `-l, --max-length <words>` | Maximum length in words (default: 500) |
+| `-h, --help` | Display help |
+| `-V, --version` | Display version |
 
 ### Examples
 
-Compare against a different base branch:
 ```bash
+# Generate against develop branch
 llmpr --base develop
+
+# Save to file
+llmpr -o pr.md
+
+# Concise description
+llmpr --style concise
+
+# Limit length to 300 words
+llmpr --max-length 300
+
+# Use specific OpenAI model
+llmpr --model gpt-4-turbo
 ```
 
-Use a different OpenAI model:
-```bash
-llmpr --model gpt-3.5-turbo
-```
+## GitHub Action
 
-Save the PR description to a file:
-```bash
-llmpr --output pr-description.md
-```
-
-Show detailed API request/response information:
-```bash
-llmpr --verbose
-```
-
-Run in silent mode (minimal output):
-```bash
-llmpr --silent
-```
-
-## Features
-
-- **Beautiful Terminal Output**: Color-coded logs and status messages 
-- **Progress Indicators**: Loading spinners show you what's happening
-- **API Response Logging**: Show detailed information about API calls with the `--verbose` flag
-- **Formatted Output**: Clean, organized PR descriptions
-
-## GitHub Action Integration
-
-llmpr can be used as a GitHub Action to automatically generate PR descriptions when new pull requests are created.
+LLMPR can automatically generate PR descriptions when PRs are created or on demand.
 
 ### Setup
 
 1. Add your OpenAI API key to GitHub Secrets as `OPENAI_API_KEY`
-2. Use our pre-configured workflow file or create your own
-
-### Usage Example
-
-Add this workflow to your repository at `.github/workflows/pr-description.yml`:
+2. Create a workflow file at `.github/workflows/pr-description.yml`:
 
 ```yaml
 name: Generate PR Description
@@ -135,7 +138,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          llmpr --base ${{ github.event.pull_request.base.ref }} --output pr_description.md
+          llmpr --base ${{ github.event.pull_request.base.ref }} --output pr_description.md --style verbose
       
       - name: Update PR description
         uses: actions/github-script@v7
@@ -153,38 +156,20 @@ jobs:
             });
 ```
 
-For more detailed setup instructions, see [GITHUB_ACTION_SETUP.md](./GITHUB_ACTION_SETUP.md).
+### Comment Trigger
 
-### Reusable Workflow
+Add a comment-based trigger to generate PR descriptions on demand:
 
-We also provide a reusable workflow that can be called from your own workflows:
+1. Create `.github/workflows/comment-trigger.yml`
+2. In any PR, comment `/generate-pr-description`
 
-```yaml
-name: My PR Description Workflow
+## Why LLMPR?
 
-on:
-  pull_request:
-    types: [opened]
+- **Save Time**: Generate comprehensive PR descriptions in seconds
+- **Consistency**: Create standardized, high-quality documentation
+- **Clarity**: Help reviewers understand changes more quickly
+- **Collaboration**: Improve team communication with clear change explanations
 
-jobs:
-  call-llmpr-action:
-    uses: yourusername/llmpr/.github/workflows/llmpr-action.yml@main
-    with:
-      base-branch: main
-      model: gpt-4
-      verbose: false
-    secrets:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-```
+## License
 
-This allows for easy integration with your existing CI/CD pipelines.
-
-### Comment-Based Trigger
-
-You can also add a comment trigger to generate PR descriptions on demand:
-
-1. Add the provided `comment-trigger.yml` workflow to your repository
-2. On any PR, add a comment with `/generate-pr-description`
-3. The workflow will automatically generate and update the PR description
-
-This is useful for regenerating descriptions or generating them for PRs that were created before the automatic trigger was set up.
+MIT
