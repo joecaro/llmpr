@@ -78,7 +78,7 @@ const logger = {
 program
 	.version(VERSION)
 	.option('-b, --base <branch>', 'base branch to compare against', 'main')
-	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-4o')
+	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-4.1')
 	.option('-o, --output <file>', 'output file for PR description')
 	.option('-v, --verbose', 'show detailed logs and API responses')
 	.option('-s, --style <style>', 'PR description style (concise, standard, or verbose)', 'standard')
