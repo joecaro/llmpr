@@ -1,6 +1,6 @@
 {
   "name": "llmpr",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "CLI tool for creating PR descriptions using OpenAI",
   "main": "dist/index.js",
   "type": "module",
@@ -38,6 +38,7 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
+    "@types/prompts": "^2.4.9",
     "axios": "^1.6.9",
     "boxen": "^8.0.1",
     "chalk": "^5.4.1",
@@ -45,7 +46,8 @@
     "commander": "^12.0.0",
     "figures": "^6.1.0",
     "log-update": "^6.1.0",
-    "ora": "^8.2.0"
+    "ora": "^8.2.0",
+    "prompts": "^2.4.2"
   },
   "repository": {
     "type": "git",

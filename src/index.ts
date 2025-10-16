@@ -11,6 +11,7 @@ import boxen from 'boxen'
 import figures from 'figures'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import prompts from 'prompts'
 
 // Get version from package.json
 const __filename = fileURLToPath(import.meta.url)
@@ -78,11 +79,12 @@ const logger = {
 program
 	.version(VERSION)
 	.option('-b, --base <branch>', 'base branch to compare against', 'main')
-	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-4.1')
+	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-5')
 	.option('-o, --output <file>', 'output file for PR description')
 	.option('-v, --verbose', 'show detailed logs and API responses')
 	.option('-s, --style <style>', 'PR description style (concise, standard, or verbose)', 'standard')
 	.option('-l, --max-length <words>', 'maximum length of PR description in words', '500')
+	.option('-c, --create-pr', 'create a GitHub PR after generating description')
 	.addHelpText('after', `
 Style options:
   - concise: Focus on summary, key details, and changes only
@@ -395,17 +397,226 @@ async function callOpenAI(apiKey: string, content: string, previousMessages: any
  */
 async function readFileContent(filepath: string): Promise<string> {
 	// Ensure the filepath is relative to the workspace
-	const fullPath = path.isAbsolute(filepath) 
-		? filepath 
+	const fullPath = path.isAbsolute(filepath)
+		? filepath
 		: path.join(process.cwd(), filepath)
-	
+
 	// Check if file exists
 	if (!statSync(fullPath, { throwIfNoEntry: false })) {
 		throw new Error(`File not found: ${filepath}`)
 	}
-	
+
 	// Read the file
 	return readFileSync(fullPath, 'utf8')
+}
+
+/**
+ * Check if gh CLI is installed
+ */
+export function checkGhInstalled(): Promise<boolean> {
+	return new Promise((resolve) => {
+		exec('gh --version', (err) => {
+			resolve(!err)
+		})
+	})
+}
+
+/**
+ * Get current branch name
+ */
+export function getCurrentBranch(): Promise<string> {
+	return new Promise((resolve, reject) => {
+		exec('git branch --show-current', (err, stdout, stderr) => {
+			if (err) {
+				reject(new Error(`Error getting current branch: ${stderr || err.message}`))
+				return
+			}
+			resolve(stdout.trim())
+		})
+	})
+}
+
+/**
+ * Get suggested PR title from recent commits
+ */
+export function getSuggestedTitle(): Promise<string> {
+	return new Promise((resolve, reject) => {
+		exec(`git log ${options.base}..HEAD --pretty=format:"%s" --no-merges`, (err, stdout, stderr) => {
+			if (err) {
+				reject(new Error(`Error getting commit messages: ${stderr || err.message}`))
+				return
+			}
+
+			const commits = stdout.trim().split('\n').filter(line => line.trim() !== '')
+
+			if (commits.length === 0) {
+				resolve('Update changes')
+				return
+			}
+
+			// If only one commit, use its message
+			if (commits.length === 1) {
+				resolve(commits[0])
+				return
+			}
+
+			// If multiple commits, try to find a common theme or use the first one
+			resolve(commits[0])
+		})
+	})
+}
+
+/**
+ * Create a GitHub PR using gh CLI
+ */
+export async function createPullRequest(title: string, body: string, base: string, draft: boolean): Promise<string> {
+	const spinner = ora({
+		text: 'Creating pull request...',
+		spinner: 'dots'
+	}).start()
+
+	return new Promise((resolve, reject) => {
+		// Build the gh pr create command
+		const draftFlag = draft ? '--draft' : ''
+		const command = `gh pr create --title "${title.replace(/"/g, '\\"')}" --body-file - --base ${base} ${draftFlag}`
+
+		const child = exec(command, (err, stdout, stderr) => {
+			if (err) {
+				spinner.fail('Failed to create pull request')
+				reject(new Error(`Error creating PR: ${stderr || err.message}`))
+				return
+			}
+
+			spinner.succeed('Pull request created successfully!')
+
+			// Extract PR URL from output
+			const prUrl = stdout.trim()
+			resolve(prUrl)
+		})
+
+		// Write the PR body to stdin
+		if (child.stdin) {
+			child.stdin.write(body)
+			child.stdin.end()
+		}
+	})
+}
+
+/**
+ * Interactive PR creation flow
+ */
+export async function interactivePRCreation(generatedDescription: string): Promise<void> {
+	logger.divider()
+	logger.title('PR Creation Flow')
+
+	// Check if gh CLI is installed
+	const ghInstalled = await checkGhInstalled()
+	if (!ghInstalled) {
+		logger.error('GitHub CLI (gh) is not installed')
+		logger.info('Install it from: https://cli.github.com/')
+		logger.info('Or run: brew install gh (on macOS)')
+		process.exit(1)
+	}
+
+	// Get current branch
+	const currentBranch = await getCurrentBranch()
+	logger.info(`Current branch: ${colors.highlight(currentBranch)}`)
+
+	// Get suggested title
+	const suggestedTitle = await getSuggestedTitle()
+
+	// Show generated description preview
+	logger.divider()
+	console.log(colors.subheading('Generated Description Preview'))
+	const preview = generatedDescription.length > 200
+		? generatedDescription.substring(0, 200) + '...'
+		: generatedDescription
+	console.log(colors.dim(preview))
+	logger.divider()
+
+	// Interactive prompts
+	const response = await prompts([
+		{
+			type: 'text',
+			name: 'title',
+			message: 'PR Title:',
+			initial: suggestedTitle,
+			validate: (value: string) => value.trim().length > 0 ? true : 'Title cannot be empty'
+		},
+		{
+			type: 'confirm',
+			name: 'editDescription',
+			message: 'Edit the generated description?',
+			initial: false
+		},
+		{
+			type: (prev: boolean) => prev ? 'text' : null,
+			name: 'description',
+			message: 'PR Description (leave empty to keep generated):',
+			initial: generatedDescription,
+			validate: (value: string) => value.trim().length > 0 ? true : 'Description cannot be empty'
+		},
+		{
+			type: 'text',
+			name: 'base',
+			message: 'Base branch:',
+			initial: options.base,
+			validate: (value: string) => value.trim().length > 0 ? true : 'Base branch cannot be empty'
+		},
+		{
+			type: 'confirm',
+			name: 'draft',
+			message: 'Create as draft PR?',
+			initial: false
+		},
+		{
+			type: 'confirm',
+			name: 'confirm',
+			message: 'Create pull request?',
+			initial: true
+		}
+	])
+
+	// Handle user cancellation
+	if (!response.confirm) {
+		logger.warning('PR creation cancelled')
+		return
+	}
+
+	// Use edited description if provided, otherwise use generated
+	const finalDescription = response.editDescription && response.description
+		? response.description
+		: generatedDescription
+
+	// Create the PR
+	try {
+		const prUrl = await createPullRequest(
+			response.title,
+			finalDescription,
+			response.base,
+			response.draft
+		)
+
+		// Display success with PR details
+		logger.divider()
+		logger.success('Pull Request Created!')
+		logger.divider()
+
+		logger.box(`
+${colors.subheading('Title:')} ${response.title}
+
+${colors.subheading('Base Branch:')} ${response.base}
+${colors.subheading('Status:')} ${response.draft ? colors.warning('Draft') : colors.success('Ready for Review')}
+
+${colors.subheading('URL:')} ${colors.secondary(prUrl)}
+		`.trim(), 'PR Details')
+
+		logger.info(`Open in browser: ${colors.highlight(prUrl)}`)
+	} catch (error: unknown) {
+		const errorMessage = error instanceof Error ? error.message : String(error)
+		logger.error(`Failed to create PR: ${errorMessage}`)
+		process.exit(1)
+	}
 }
 
 export async function main() {
@@ -549,21 +760,26 @@ function processData(items: Item[]): Result[] {
 If you need to see the contents of any specific file to better understand the changes, you can request it by including [NEED_CONTEXT:filepath] in your response. For example, [NEED_CONTEXT:src/config.ts]. You can request up to 3 files for additional context.`;
 		// Send to OpenAI and get response
 		const response = await sendPromptToOpenAI(initialPrompt)
-		
-		// Display or save the result
-		if (options.output) {
-			writeFileSync(options.output, response)
-			logger.success(`PR description saved to ${colors.highlight(options.output)}`)
-			
-				logger.info(`Use ${colors.highlight(`cat ${options.output}`)} to view the content`)
+
+		// If --create-pr flag is set, start interactive PR creation
+		if (options.createPr) {
+			await interactivePRCreation(response)
 		} else {
-			logger.divider()
-			logger.title('Generated PR Description')
-			console.log(response)
-			logger.divider()
-			
-				logger.info('Copy the text above for your PR description')
-				logger.info(`Tip: Use ${colors.highlight('llmpr -o pr.md')} to save to a file next time`)
+			// Display or save the result
+			if (options.output) {
+				writeFileSync(options.output, response)
+				logger.success(`PR description saved to ${colors.highlight(options.output)}`)
+
+					logger.info(`Use ${colors.highlight(`cat ${options.output}`)} to view the content`)
+			} else {
+				logger.divider()
+				logger.title('Generated PR Description')
+				console.log(response)
+				logger.divider()
+
+					logger.info('Copy the text above for your PR description')
+					logger.info(`Tip: Use ${colors.highlight('llmpr -o pr.md')} to save to a file next time`)
+			}
 		}
 	} catch (error: unknown) {
 		let errorMessage = 'An unknown error occurred'
