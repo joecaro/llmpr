@@ -123,9 +123,12 @@ The `--create-pr` flag enables an interactive workflow that:
 
 ### Prerequisites for PR Creation
 
-- GitHub CLI (`gh`) must be installed and authenticated
-- Install: `brew install gh` (macOS) or visit https://cli.github.com/
-- Authenticate: `gh auth login`
+- **GitHub CLI (`gh`)** must be installed and authenticated
+  - Install: `brew install gh` (macOS) or visit https://cli.github.com/
+  - Authenticate: `gh auth login`
+- **Repository access**: You must be a collaborator with write access
+  - If you don't have access, you can fork the repo and create PRs from your fork
+  - Or use `llmpr` without `--create-pr` to generate the description and create the PR manually
 
 ### Example Interactive Flow
 
