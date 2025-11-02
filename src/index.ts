@@ -11,6 +11,7 @@ import boxen from 'boxen'
 import figures from 'figures'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import prompts from 'prompts'
 
 // Get version from package.json
 const __filename = fileURLToPath(import.meta.url)
@@ -78,11 +79,13 @@ const logger = {
 program
 	.version(VERSION)
 	.option('-b, --base <branch>', 'base branch to compare against', 'main')
-	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-4.1')
+	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-5')
 	.option('-o, --output <file>', 'output file for PR description')
 	.option('-v, --verbose', 'show detailed logs and API responses')
 	.option('-s, --style <style>', 'PR description style (concise, standard, or verbose)', 'standard')
 	.option('-l, --max-length <words>', 'maximum length of PR description in words', '500')
+	.option('-c, --create-pr', 'create a GitHub PR after generating description')
+	.option('-gh, --github-config', 'check github config', false)
 	.addHelpText('after', `
 Style options:
   - concise: Focus on summary, key details, and changes only
@@ -92,6 +95,70 @@ Style options:
 
 // Remove the custom help text that always shows
 const options = program.opts()
+
+if (options.githubConfig) {
+	logger.info('Checking github config...')
+	const ghInstalled = await checkGhInstalled()
+	if (!ghInstalled) {
+		logger.error('GitHub CLI (gh) is not installed')
+		logger.info('Install it from: https://cli.github.com/')
+		process.exit(1)
+	}
+	const authStatus = await checkGhAuth()
+	if (options.verbose) {
+		logger.box(authStatus.output || 'No output', 'GitHub Auth Status')
+	}
+	if (!authStatus.authenticated) {
+		logger.error('You are not authenticated with GitHub CLI')
+		logger.info('Run: gh auth login')
+		logger.info('Follow the prompts to authenticate with GitHub')
+		process.exit(1)
+	}
+	logger.success(`Authenticated as ${colors.highlight(authStatus.activeAccount?.username || 'user')}`)
+	let repoAccess = await checkRepoAccess()
+	if (!repoAccess.hasAccess) {
+		logger.warning(`Active account ${colors.highlight(authStatus.activeAccount?.username || 'unknown')} does not have repo access`)
+
+		// Prompt user to select an account
+		const accountChoices = authStatus.accounts.map(acc => ({
+			title: `${acc.username}${acc.active ? ' (currently active)' : ''}`,
+			value: acc.username,
+			description: `Scopes: ${acc.scopes.slice(0, 3).join(', ')}${acc.scopes.length > 3 ? '...' : ''}`
+		}))
+
+		const selectResponse = await prompts({
+			type: 'select',
+			name: 'account',
+			message: 'Select GitHub account to use for this PR:',
+			choices: accountChoices,
+			initial: authStatus.accounts.findIndex(acc => acc.active)
+		})
+
+		if (!selectResponse.account) {
+			logger.warning('PR creation cancelled')
+			process.exit(0)
+		}
+
+		// Switch account if different from active
+		if (selectResponse.account !== authStatus.activeAccount?.username) {
+			const spinner = ora('Switching GitHub account...').start()
+			const switched = await switchGhAccount(selectResponse.account)
+
+			if (!switched) {
+				spinner.fail('Failed to switch GitHub account')
+				process.exit(1)
+			}
+
+			spinner.succeed(`Switched to ${colors.highlight(selectResponse.account)}`)
+
+			// Re-check repo access with new account
+			repoAccess = await checkRepoAccess()
+		}
+	}
+	const currentBranch = await getCurrentBranch()
+	logger.info(`Current branch: ${colors.highlight(currentBranch)}`)
+	process.exit(0)
+}
 
 // Get API key from environment variable or prompt the user
 export function getApiKey(): string {
@@ -395,17 +462,492 @@ async function callOpenAI(apiKey: string, content: string, previousMessages: any
  */
 async function readFileContent(filepath: string): Promise<string> {
 	// Ensure the filepath is relative to the workspace
-	const fullPath = path.isAbsolute(filepath) 
-		? filepath 
+	const fullPath = path.isAbsolute(filepath)
+		? filepath
 		: path.join(process.cwd(), filepath)
-	
+
 	// Check if file exists
 	if (!statSync(fullPath, { throwIfNoEntry: false })) {
 		throw new Error(`File not found: ${filepath}`)
 	}
-	
+
 	// Read the file
 	return readFileSync(fullPath, 'utf8')
+}
+
+/**
+ * Check if gh CLI is installed
+ */
+export function checkGhInstalled(): Promise<boolean> {
+	return new Promise((resolve) => {
+		exec('gh --version', (err) => {
+			resolve(!err)
+		})
+	})
+}
+
+/**
+ * GitHub account information
+ */
+interface GhAccount {
+	username: string
+	active: boolean
+	scopes: string[]
+}
+
+/**
+ * Check if user is authenticated with gh CLI and get all accounts
+ */
+export function checkGhAuth(): Promise<{ authenticated: boolean; accounts: GhAccount[]; activeAccount?: GhAccount; output?: string }> {
+	return new Promise((resolve) => {
+		// Temporarily unset GITHUB_TOKEN to get actual gh CLI auth status
+		const env = { ...process.env }
+		delete env.GITHUB_TOKEN
+		delete env.GH_TOKEN
+
+		exec('gh auth status', { env }, (err, stdout, stderr) => {
+			// gh auth status returns info on stderr even on success
+			const output = stderr + stdout
+
+			if (err || !output.includes('Logged in')) {
+				resolve({ authenticated: false, accounts: [], output: output })
+				return
+			}
+
+			// Parse all accounts
+			const accounts: GhAccount[] = []
+
+			// Match all account usernames first
+			const accountRegex = /✓ Logged in to github\.com account ([^\s(]+)/g
+			const matches = Array.from(output.matchAll(accountRegex))
+
+			for (let i = 0; i < matches.length; i++) {
+				const match = matches[i]
+				const username = match[1].trim()
+
+				// Find the content for this account (from this match to the next match or end)
+				const startIndex = match.index || 0
+				const nextMatch = matches[i + 1]
+				const endIndex = nextMatch ? (nextMatch.index || output.length) : output.length
+
+				const accountBlock = output.substring(startIndex, endIndex)
+
+				// Check if active
+				const activeMatch = accountBlock.match(/Active account:\s*(true|false)/)
+				const isActive = activeMatch ? activeMatch[1] === 'true' : false
+
+				// Extract token scopes
+				const scopesMatch = accountBlock.match(/Token scopes:\s*([^\n]+)/)
+				const scopes: string[] = []
+				if (scopesMatch) {
+					const scopesStr = scopesMatch[1].replace(/'/g, '').trim()
+					scopes.push(...scopesStr.split(',').map(s => s.trim()))
+				}
+
+				accounts.push({ username, active: isActive, scopes })
+			}
+
+			if (accounts.length === 0) {
+				resolve({ authenticated: false, accounts: [], output: output })
+				return
+			}
+
+			const activeAccount = accounts.find(acc => acc.active)
+
+			if (options.verbose) {
+				logger.info(`Parsed ${accounts.length} accounts:`)
+				accounts.forEach(acc => {
+					logger.info(`  - ${acc.username} (${acc.active ? 'active' : 'inactive'}) - Scopes: ${acc.scopes.join(', ')}`)
+				})
+			}
+
+			resolve({
+				authenticated: true,
+				accounts,
+				activeAccount,
+				output: output
+			})
+		})
+	})
+}
+
+/**
+ * Switch the active GitHub account
+ */
+export function switchGhAccount(username: string): Promise<boolean> {
+	return new Promise((resolve) => {
+		// Temporarily unset GITHUB_TOKEN to allow gh CLI to manage auth
+		const env = { ...process.env }
+		delete env.GITHUB_TOKEN
+		delete env.GH_TOKEN
+
+		exec(`gh auth switch --user ${username}`, { env }, (err, _stdout, stderr) => {
+			if (err) {
+				logger.error(`Failed to switch account: ${stderr || err.message}`)
+				resolve(false)
+				return
+			}
+			resolve(true)
+		})
+	})
+}
+
+/**
+ * Check if user has push access to the repository
+ */
+export function checkRepoAccess(): Promise<{ hasAccess: boolean; repoName?: string }> {
+	return new Promise((resolve) => {
+		// Temporarily unset GITHUB_TOKEN to use gh CLI managed auth
+		const env = { ...process.env }
+		delete env.GITHUB_TOKEN
+		delete env.GH_TOKEN
+
+		exec('gh repo view --json nameWithOwner,viewerPermission', { env }, (err, stdout) => {
+			if (err) {
+				resolve({ hasAccess: false })
+				return
+			}
+
+			try {
+				const data = JSON.parse(stdout)
+				const permission = data.viewerPermission || 'NONE'
+				const repoName = data.nameWithOwner
+
+				// Check if user has write/admin/maintain access
+				const hasAccess = ['WRITE', 'ADMIN', 'MAINTAIN'].includes(permission)
+
+				resolve({ hasAccess, repoName })
+			} catch {
+				resolve({ hasAccess: false })
+			}
+		})
+	})
+}
+
+/**
+ * Get current branch name
+ */
+export function getCurrentBranch(): Promise<string> {
+	return new Promise((resolve, reject) => {
+		exec('git branch --show-current', (err, stdout, stderr) => {
+			if (err) {
+				reject(new Error(`Error getting current branch: ${stderr || err.message}`))
+				return
+			}
+			resolve(stdout.trim())
+		})
+	})
+}
+
+/**
+ * Get suggested PR title from recent commits
+ */
+export function getSuggestedTitle(): Promise<string> {
+	return new Promise((resolve, reject) => {
+		exec(`git log ${options.base}..HEAD --pretty=format:"%s" --no-merges`, (err, stdout, stderr) => {
+			if (err) {
+				reject(new Error(`Error getting commit messages: ${stderr || err.message}`))
+				return
+			}
+
+			const commits = stdout.trim().split('\n').filter(line => line.trim() !== '')
+
+			if (commits.length === 0) {
+				resolve('Update changes')
+				return
+			}
+
+			// If only one commit, use its message
+			if (commits.length === 1) {
+				resolve(commits[0])
+				return
+			}
+
+			// If multiple commits, try to find a common theme or use the first one
+			resolve(commits[0])
+		})
+	})
+}
+
+/**
+ * Create a GitHub PR using gh CLI
+ */
+export async function createPullRequest(title: string, body: string, base: string, draft: boolean): Promise<string> {
+	const spinner = ora({
+		text: 'Creating pull request...',
+		spinner: 'dots'
+	}).start()
+
+	return new Promise((resolve, reject) => {
+		// Build the gh pr create command
+		const draftFlag = draft ? '--draft' : ''
+		const command = `gh pr create --title "${title.replace(/"/g, '\\"')}" --body-file - --base ${base} ${draftFlag}`
+
+		// Temporarily unset GITHUB_TOKEN to use gh CLI managed auth
+		const env = { ...process.env }
+		delete env.GITHUB_TOKEN
+		delete env.GH_TOKEN
+
+		const child = exec(command, { env }, (err, stdout, stderr) => {
+			if (err) {
+				spinner.fail('Failed to create pull request')
+
+				// Parse error message for common issues
+				let errorMessage = stderr || err.message
+
+				if (errorMessage.includes('must be a collaborator')) {
+					errorMessage = 'You must be a collaborator with write access to create PRs in this repository.\n' +
+						'Options:\n' +
+						'  • Fork the repository and create a PR from your fork\n' +
+						'  • Ask a repository admin to add you as a collaborator\n' +
+						'  • Use llmpr without --create-pr to generate the description only'
+				} else if (errorMessage.includes('already exists')) {
+					errorMessage = 'A pull request already exists for this branch.\n' +
+						'Use: gh pr view --web to see the existing PR'
+				} else if (errorMessage.includes('No commits between')) {
+					errorMessage = 'No commits found between base and head branch.\n' +
+						'Make sure you have pushed commits to your branch'
+				} else if (errorMessage.includes('not found')) {
+					errorMessage = `Base branch "${base}" not found.\n` +
+						'Check that the base branch name is correct'
+				}
+
+				reject(new Error(errorMessage))
+				return
+			}
+
+			spinner.succeed('Pull request created successfully!')
+
+			// Extract PR URL from output
+			const prUrl = stdout.trim()
+			resolve(prUrl)
+		})
+
+		// Write the PR body to stdin
+		if (child.stdin) {
+			child.stdin.write(body)
+			child.stdin.end()
+		}
+	})
+}
+
+/**
+ * Interactive PR creation flow
+ */
+export async function interactivePRCreation(generatedDescription: string): Promise<void> {
+	logger.divider()
+	logger.title('PR Creation Flow')
+
+	// Check if gh CLI is installed
+	const ghInstalled = await checkGhInstalled()
+	if (!ghInstalled) {
+		logger.error('GitHub CLI (gh) is not installed')
+		logger.info('Install it from: https://cli.github.com/')
+		logger.info('Or run: brew install gh (on macOS)')
+		process.exit(1)
+	}
+
+	// Check if user is authenticated
+	let authStatus = await checkGhAuth()
+	if (!authStatus.authenticated) {
+		logger.error('You are not authenticated with GitHub CLI')
+		logger.info('Run: gh auth login')
+		logger.info('Follow the prompts to authenticate with GitHub')
+		process.exit(1)
+	}
+
+	logger.success(`Authenticated as ${colors.highlight(authStatus.activeAccount?.username || 'user')}`)
+
+	// Handle multiple accounts
+	if (authStatus.accounts.length > 1) {
+		logger.info(`Found ${authStatus.accounts.length} GitHub accounts`)
+
+		// Show all accounts
+		authStatus.accounts.forEach(acc => {
+			const status = acc.active ? colors.success('active') : colors.dim('inactive')
+			logger.info(`  - ${acc.username} (${status})`)
+		})
+
+		// Check repo access with current active account first
+		let repoAccess = await checkRepoAccess()
+
+		// If active account doesn't have access, offer to switch
+		if (!repoAccess.hasAccess) {
+			logger.warning(`Active account ${colors.highlight(authStatus.activeAccount?.username || 'unknown')} does not have repo access`)
+
+			// Prompt user to select an account
+			const accountChoices = authStatus.accounts.map(acc => ({
+				title: `${acc.username}${acc.active ? ' (currently active)' : ''}`,
+				value: acc.username,
+				description: `Scopes: ${acc.scopes.slice(0, 3).join(', ')}${acc.scopes.length > 3 ? '...' : ''}`
+			}))
+
+			const selectResponse = await prompts({
+				type: 'select',
+				name: 'account',
+				message: 'Select GitHub account to use for this PR:',
+				choices: accountChoices,
+				initial: authStatus.accounts.findIndex(acc => acc.active)
+			})
+
+			if (!selectResponse.account) {
+				logger.warning('PR creation cancelled')
+				process.exit(0)
+			}
+
+			// Switch account if different from active
+			if (selectResponse.account !== authStatus.activeAccount?.username) {
+				const spinner = ora('Switching GitHub account...').start()
+				const switched = await switchGhAccount(selectResponse.account)
+
+				if (!switched) {
+					spinner.fail('Failed to switch GitHub account')
+					process.exit(1)
+				}
+
+				spinner.succeed(`Switched to ${colors.highlight(selectResponse.account)}`)
+
+				// Re-check repo access with new account
+				repoAccess = await checkRepoAccess()
+			}
+
+			// Final check after potential switch
+			if (!repoAccess.hasAccess) {
+				logger.error('Selected account does not have permission to create pull requests')
+				if (repoAccess.repoName) {
+					logger.info(`Repository: ${colors.highlight(repoAccess.repoName)}`)
+				}
+				logger.info('Options:')
+				logger.info('  1. Fork the repository and create a PR from your fork')
+				logger.info('  2. Ask a repository admin to add you as a collaborator')
+				logger.info('  3. Use llmpr without --create-pr to generate the description only')
+				process.exit(1)
+			}
+		}
+
+		if (repoAccess.repoName) {
+			logger.info(`Repository: ${colors.highlight(repoAccess.repoName)}`)
+		}
+	} else {
+		// Single account - check repository access
+		const repoAccess = await checkRepoAccess()
+		if (!repoAccess.hasAccess) {
+			logger.error('You do not have permission to create pull requests in this repository')
+			if (repoAccess.repoName) {
+				logger.info(`Repository: ${colors.highlight(repoAccess.repoName)}`)
+			}
+			logger.info('You need to be a collaborator with write access to create PRs')
+			logger.info('Options:')
+			logger.info('  1. Fork the repository and create a PR from your fork')
+			logger.info('  2. Ask a repository admin to add you as a collaborator')
+			logger.info('  3. Use llmpr without --create-pr to generate the description, then create PR manual ly')
+			process.exit(1)
+		}
+
+		if (repoAccess.repoName) {
+			logger.info(`Repository: ${colors.highlight(repoAccess.repoName)}`)
+		}
+	}
+
+	// Get current branch
+	const currentBranch = await getCurrentBranch()
+	logger.info(`Current branch: ${colors.highlight(currentBranch)}`)
+
+	// Get suggested title
+	const suggestedTitle = await getSuggestedTitle()
+
+	// Show generated description preview
+	logger.divider()
+	console.log(colors.subheading('Generated Description Preview'))
+	const preview = generatedDescription.length > 200
+		? generatedDescription.substring(0, 200) + '...'
+		: generatedDescription
+	console.log(colors.dim(preview))
+	logger.divider()
+
+	// Interactive prompts
+	const response = await prompts([
+		{
+			type: 'text',
+			name: 'title',
+			message: 'PR Title:',
+			initial: suggestedTitle,
+			validate: (value: string) => value.trim().length > 0 ? true : 'Title cannot be empty'
+		},
+		{
+			type: 'confirm',
+			name: 'editDescription',
+			message: 'Edit the generated description?',
+			initial: false
+		},
+		{
+			type: (prev: boolean) => prev ? 'text' : null,
+			name: 'description',
+			message: 'PR Description (leave empty to keep generated):',
+			initial: generatedDescription,
+			validate: (value: string) => value.trim().length > 0 ? true : 'Description cannot be empty'
+		},
+		{
+			type: 'text',
+			name: 'base',
+			message: 'Base branch:',
+			initial: options.base,
+			validate: (value: string) => value.trim().length > 0 ? true : 'Base branch cannot be empty'
+		},
+		{
+			type: 'confirm',
+			name: 'draft',
+			message: 'Create as draft PR?',
+			initial: false
+		},
+		{
+			type: 'confirm',
+			name: 'confirm',
+			message: 'Create pull request?',
+			initial: true
+		}
+	])
+
+	// Handle user cancellation
+	if (!response.confirm) {
+		logger.warning('PR creation cancelled')
+		return
+	}
+
+	// Use edited description if provided, otherwise use generated
+	const finalDescription = response.editDescription && response.description
+		? response.description
+		: generatedDescription
+
+	// Create the PR
+	try {
+		const prUrl = await createPullRequest(
+			response.title,
+			finalDescription,
+			response.base,
+			response.draft
+		)
+
+		// Display success with PR details
+		logger.divider()
+		logger.success('Pull Request Created!')
+		logger.divider()
+
+		logger.box(`
+${colors.subheading('Title:')} ${response.title}
+
+${colors.subheading('Base Branch:')} ${response.base}
+${colors.subheading('Status:')} ${response.draft ? colors.warning('Draft') : colors.success('Ready for Review')}
+
+${colors.subheading('URL:')} ${colors.secondary(prUrl)}
+		`.trim(), 'PR Details')
+
+		logger.info(`Open in browser: ${colors.highlight(prUrl)}`)
+	} catch (error: unknown) {
+		const errorMessage = error instanceof Error ? error.message : String(error)
+		logger.error(`Failed to create PR: ${errorMessage}`)
+		process.exit(1)
+	}
 }
 
 export async function main() {
@@ -549,21 +1091,26 @@ function processData(items: Item[]): Result[] {
 If you need to see the contents of any specific file to better understand the changes, you can request it by including [NEED_CONTEXT:filepath] in your response. For example, [NEED_CONTEXT:src/config.ts]. You can request up to 3 files for additional context.`;
 		// Send to OpenAI and get response
 		const response = await sendPromptToOpenAI(initialPrompt)
-		
-		// Display or save the result
-		if (options.output) {
-			writeFileSync(options.output, response)
-			logger.success(`PR description saved to ${colors.highlight(options.output)}`)
-			
-				logger.info(`Use ${colors.highlight(`cat ${options.output}`)} to view the content`)
+
+		// If --create-pr flag is set, start interactive PR creation
+		if (options.createPr) {
+			await interactivePRCreation(response)
 		} else {
-			logger.divider()
-			logger.title('Generated PR Description')
-			console.log(response)
-			logger.divider()
-			
-				logger.info('Copy the text above for your PR description')
-				logger.info(`Tip: Use ${colors.highlight('llmpr -o pr.md')} to save to a file next time`)
+			// Display or save the result
+			if (options.output) {
+				writeFileSync(options.output, response)
+				logger.success(`PR description saved to ${colors.highlight(options.output)}`)
+
+					logger.info(`Use ${colors.highlight(`cat ${options.output}`)} to view the content`)
+			} else {
+				logger.divider()
+				logger.title('Generated PR Description')
+				console.log(response)
+				logger.divider()
+
+					logger.info('Copy the text above for your PR description')
+					logger.info(`Tip: Use ${colors.highlight('llmpr -o pr.md')} to save to a file next time`)
+			}
 		}
 	} catch (error: unknown) {
 		let errorMessage = 'An unknown error occurred'
