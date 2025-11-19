@@ -81,6 +81,7 @@ program
 	.option('-b, --base <branch>', 'base branch to compare against', 'main')
 	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-5')
 	.option('-o, --output <file>', 'output file for PR description')
+	.option('-r, --review', 'generate a structured code review instead of a PR description')
 	.option('-v, --verbose', 'show detailed logs and API responses')
 	.option('-s, --style <style>', 'PR description style (concise, standard, or verbose)', 'standard')
 	.option('-l, --max-length <words>', 'maximum length of PR description in words', '500')
@@ -306,10 +307,11 @@ export function getDirectoryStructure(dir: string, changedFiles: string[] = []):
 	}
 }
 
-export async function sendPromptToOpenAI(prompt: string): Promise<string> {
+export async function sendPromptToOpenAI(prompt: string, taskName = 'PR description'): Promise<string> {
 	const apiKey = getApiKey()
+	const capitalizedTask = taskName.charAt(0).toUpperCase() + taskName.slice(1)
 	const spinner = ora({
-		text: `Generating PR description using ${colors.highlight(options.model)}...`,
+		text: `Generating ${taskName} using ${colors.highlight(options.model)}...`,
 		spinner: 'dots'
 	}).start()
 
@@ -362,17 +364,17 @@ export async function sendPromptToOpenAI(prompt: string): Promise<string> {
 			
 			// Build follow-up prompt
 			const followUpPrompt = `
-You previously requested additional context to complete the PR description.
+You previously requested additional context to complete the ${taskName}.
 Here is the requested context:
 
 ${additionalContext.join('\n\n')}
 
-Based on this additional information, please generate the complete PR description as requested originally.
-Do NOT request more context with [NEED_CONTEXT:filepath]. This is your final opportunity to generate the PR description.
+Based on this additional information, please generate the complete ${taskName} as requested originally.
+Do NOT request more context with [NEED_CONTEXT:filepath]. This is your final opportunity to generate the ${taskName}.
 `
 			
 			// Send follow-up request
-			spinner.text = `Round ${currentRound + 1}/${maxRounds}: Generating improved PR description...`
+			spinner.text = `Round ${currentRound + 1}/${maxRounds}: Generating improved ${taskName}...`
 			response = await callOpenAI(apiKey, followUpPrompt, [
 				{ role: 'system', content: prompt },
 				{ role: 'assistant', content: content }
@@ -386,7 +388,7 @@ Do NOT request more context with [NEED_CONTEXT:filepath]. This is your final opp
 		const endTime = Date.now()
 		const duration = ((endTime - startTime) / 1000).toFixed(2)
 
-		spinner.succeed(`PR description generated in ${colors.highlight(duration + 's')} after ${currentRound} round${currentRound === 1 ? '' : 's'}`)
+		spinner.succeed(`${capitalizedTask} generated in ${colors.highlight(duration + 's')} after ${currentRound} round${currentRound === 1 ? '' : 's'}`)
 
 		// Log the response if verbose
 		if (options.verbose) {
@@ -417,7 +419,7 @@ Do NOT request more context with [NEED_CONTEXT:filepath]. This is your final opp
 		
 		return content
 	} catch (error: unknown) {
-		spinner.fail('Failed to generate PR description')
+		spinner.fail(`Failed to generate ${taskName}`)
 		let errorMessage = 'Unknown error'
 		
 		if (error instanceof Error) {
@@ -500,73 +502,60 @@ interface GhAccount {
  */
 export function checkGhAuth(): Promise<{ authenticated: boolean; accounts: GhAccount[]; activeAccount?: GhAccount; output?: string }> {
 	return new Promise((resolve) => {
-		// Temporarily unset GITHUB_TOKEN to get actual gh CLI auth status
+		// Temporarily unset GITHUB_TOKEN to ensure gh CLI uses its stored credentials
 		const env = { ...process.env }
 		delete env.GITHUB_TOKEN
 		delete env.GH_TOKEN
 
-		exec('gh auth status', { env }, (err, stdout, stderr) => {
-			// gh auth status returns info on stderr even on success
-			const output = stderr + stdout
-
-			if (err || !output.includes('Logged in')) {
-				resolve({ authenticated: false, accounts: [], output: output })
+		// Use gh api to fetch the active user and response headers (for scopes)
+		exec('gh api user -i', { env }, (err, stdout, stderr) => {
+			if (err) {
+				const output = (stderr || err.message || '').trim()
+				resolve({ authenticated: false, accounts: [], output })
 				return
 			}
 
-			// Parse all accounts
-			const accounts: GhAccount[] = []
+			const rawOutput = stdout.trim()
+			const firstBraceIndex = rawOutput.indexOf('{')
 
-			// Match all account usernames first
-			const accountRegex = /✓ Logged in to github\.com account ([^\s(]+)/g
-			const matches = Array.from(output.matchAll(accountRegex))
+			if (firstBraceIndex === -1) {
+				resolve({ authenticated: false, accounts: [], output: rawOutput })
+				return
+			}
 
-			for (let i = 0; i < matches.length; i++) {
-				const match = matches[i]
-				const username = match[1].trim()
+			const headerBlock = rawOutput.slice(0, firstBraceIndex).trim()
+			const jsonBlock = rawOutput.slice(firstBraceIndex).trim()
 
-				// Find the content for this account (from this match to the next match or end)
-				const startIndex = match.index || 0
-				const nextMatch = matches[i + 1]
-				const endIndex = nextMatch ? (nextMatch.index || output.length) : output.length
+			try {
+				const userData = JSON.parse(jsonBlock)
+				const username: string = userData.login || 'unknown'
 
-				const accountBlock = output.substring(startIndex, endIndex)
+				// Extract scopes from the response header (x-oauth-scopes)
+				const headerLines = headerBlock.split(/\r?\n/)
+				const scopeLine = headerLines.find(line => line.toLowerCase().startsWith('x-oauth-scopes:'))
+				const scopes = scopeLine
+					? scopeLine.split(':')[1].split(',').map(scope => scope.trim()).filter(Boolean)
+					: []
 
-				// Check if active
-				const activeMatch = accountBlock.match(/Active account:\s*(true|false)/)
-				const isActive = activeMatch ? activeMatch[1] === 'true' : false
-
-				// Extract token scopes
-				const scopesMatch = accountBlock.match(/Token scopes:\s*([^\n]+)/)
-				const scopes: string[] = []
-				if (scopesMatch) {
-					const scopesStr = scopesMatch[1].replace(/'/g, '').trim()
-					scopes.push(...scopesStr.split(',').map(s => s.trim()))
+				const account: GhAccount = {
+					username,
+					active: true,
+					scopes
 				}
 
-				accounts.push({ username, active: isActive, scopes })
-			}
-
-			if (accounts.length === 0) {
-				resolve({ authenticated: false, accounts: [], output: output })
-				return
-			}
-
-			const activeAccount = accounts.find(acc => acc.active)
-
-			if (options.verbose) {
-				logger.info(`Parsed ${accounts.length} accounts:`)
-				accounts.forEach(acc => {
-					logger.info(`  - ${acc.username} (${acc.active ? 'active' : 'inactive'}) - Scopes: ${acc.scopes.join(', ')}`)
+				resolve({
+					authenticated: true,
+					accounts: [account],
+					activeAccount: account,
+					output: rawOutput
+				})
+			} catch (parseError) {
+				resolve({
+					authenticated: false,
+					accounts: [],
+					output: `Failed to parse gh api response: ${(parseError as Error).message || parseError}`
 				})
 			}
-
-			resolve({
-				authenticated: true,
-				accounts,
-				activeAccount,
-				output: output
-			})
 		})
 	})
 }
@@ -840,7 +829,7 @@ export async function interactivePRCreation(generatedDescription: string): Promi
 			logger.info('Options:')
 			logger.info('  1. Fork the repository and create a PR from your fork')
 			logger.info('  2. Ask a repository admin to add you as a collaborator')
-			logger.info('  3. Use llmpr without --create-pr to generate the description, then create PR manual ly')
+			logger.info('  3. Use llmpr without --create-pr to generate the description, then create PR manually')
 			process.exit(1)
 		}
 
@@ -950,29 +939,8 @@ ${colors.subheading('URL:')} ${colors.secondary(prUrl)}
 	}
 }
 
-export async function main() {
-	try {
-		// Display options if verbose mode is enabled
-		if (options.verbose) {
-			logger.info(`PR style: ${colors.highlight(options.style)}`)
-			logger.info(`Max length: ${colors.highlight(options.maxLength)} words`)
-		}
-
-		// Get diff and directory structure
-		const diff = await getGitDiff()
-		if (diff.trim() === '') {
-			logger.warning('No changes detected. Make sure you have uncommitted changes.')
-			process.exit(0)
-		}
-
-		// Get list of changed files from git
-		const changedFiles = await getChangedFiles()
-		
-		// Get directory structure, focusing on changed directories
-		const dirStructure = getDirectoryStructure(process.cwd(), changedFiles)
-
-		// Build the prompt
-		const initialPrompt = `
+function buildPrDescriptionPrompt(diff: string, dirStructure: string): string {
+	return `
 You are an assistant that helps write PR descriptions.
 The diff from my branch compared to ${options.base} is:
 ${diff}
@@ -1088,9 +1056,97 @@ function processData(items: Item[]): Result[] {
 
 *MAKE SURE NOT TO ADD ITEMS OR SECTIONS IF THEY ARE NOT NEEDED. I.E. A SIMPLE CHANGE DOESN'T NEED A DIAGRAM OR EXTENSIVE EXAMPLES. ONLY INCLUDE DIAGRAMS OR CODE SNIPPETS IF THEY ARE NECESSARY TO EXPLAIN THE CHANGES.*
 
-If you need to see the contents of any specific file to better understand the changes, you can request it by including [NEED_CONTEXT:filepath] in your response. For example, [NEED_CONTEXT:src/config.ts]. You can request up to 3 files for additional context.`;
+If you need to see the contents of any specific file to better understand the changes, you can request it by including [NEED_CONTEXT:filepath] in your response. For example, [NEED_CONTEXT:src/config.ts]. You can request up to 3 files for additional context.`
+}
+
+function buildReviewPrompt(diff: string, dirStructure: string): string {
+	return `
+You are a senior software engineer performing a rigorous peer review.
+
+The diff from my branch compared to ${options.base} is:
+${diff}
+
+The repository structure is:
+\`\`\`
+${dirStructure}
+\`\`\`
+
+Provide a structured markdown review with the following sections in order:
+
+## Good
+- Celebrate what is working well, notable improvements, or strong patterns.
+
+## Bad
+- Call out risky or incorrect changes that are concerning but not necessarily blocking.
+
+## Suggestions
+- Recommend follow-up improvements, additional tests, documentation, or refactors. Be actionable.
+
+## Critical Fixes
+- Highlight blockers that must be addressed before shipping. Explain impact and preferred fixes.
+
+Guidelines:
+- Each section should contain concise bullet points; use "- None" if there is nothing to report.
+- Reference files or snippets when possible (e.g., \`src/app.ts:42\`).
+- Focus on correctness, security, tests, and developer experience.
+- Keep the overall review under ${options.maxLength} words and prioritize the highest-impact findings.
+
+If you need to see the contents of any specific file to better understand the changes, request it by including [NEED_CONTEXT:filepath] in your response (maximum 3 files).`
+}
+
+export async function main() {
+	try {
+		// Display options if verbose mode is enabled
+		if (options.verbose) {
+			if (options.review) {
+				logger.info(`Mode: ${colors.highlight('code review')}`)
+			} else {
+				logger.info(`PR style: ${colors.highlight(options.style)}`)
+			}
+			logger.info(`Max length: ${colors.highlight(options.maxLength)} words`)
+		}
+
+		// Get diff and directory structure
+		const diff = await getGitDiff()
+		if (diff.trim() === '') {
+			logger.warning('No changes detected. Make sure you have uncommitted changes.')
+			process.exit(0)
+		}
+
+		// Get list of changed files from git
+		const changedFiles = await getChangedFiles()
+		
+		// Get directory structure, focusing on changed directories
+		const dirStructure = getDirectoryStructure(process.cwd(), changedFiles)
+
+		// Build the prompt for either PR description or code review
+		const initialPrompt = options.review
+			? buildReviewPrompt(diff, dirStructure)
+			: buildPrDescriptionPrompt(diff, dirStructure)
+
+		const taskName = options.review ? 'code review' : 'PR description'
+
 		// Send to OpenAI and get response
-		const response = await sendPromptToOpenAI(initialPrompt)
+		const response = await sendPromptToOpenAI(initialPrompt, taskName)
+
+		if (options.review) {
+			if (options.createPr) {
+				logger.warning('--create-pr flag is ignored when generating a review')
+			}
+
+			if (options.output) {
+				writeFileSync(options.output, response)
+				logger.success(`Code review saved to ${colors.highlight(options.output)}`)
+				logger.info(`Use ${colors.highlight(`cat ${options.output}`)} to view the content`)
+			} else {
+				logger.divider()
+				logger.title('AI Code Review')
+				console.log(response)
+				logger.divider()
+				logger.info('Share this review with your team or use it to inform fixes')
+			}
+			return
+		}
 
 		// If --create-pr flag is set, start interactive PR creation
 		if (options.createPr) {
