@@ -2,7 +2,7 @@
 
 > AI-powered Pull Request descriptions with one command
 
-LLMPR generates professional PR descriptions from your Git changes using OpenAI's language models.
+LLMPR generates professional PR descriptions—and now structured code reviews—from your Git changes using OpenAI's language models.
 
 ## Features
 
@@ -13,6 +13,7 @@ LLMPR generates professional PR descriptions from your Git changes using OpenAI'
 - 📁 **Directory Visualization**: Shows repository structure with focus on changed files
 - 📏 **Customizable Length**: Control the maximum size of your PR descriptions
 - 🚀 **Interactive PR Creation**: Create GitHub PRs directly from the CLI with interactive prompts
+- 🧠 **AI Review Mode**: Request a structured Good/Bad/Suggestions/Critical review of your diff
 
 ## Installation
 
@@ -74,6 +75,7 @@ llmpr [options]
 | `-b, --base <branch>` | Base branch to compare against (default: "main") |
 | `-m, --model <model>` | OpenAI model to use (default: "gpt-5") |
 | `-o, --output <file>` | Save PR description to file |
+| `-r, --review` | Generate a structured code review instead of a PR description |
 | `-v, --verbose` | Show detailed logs and API responses |
 | `-s, --style <style>` | PR style: "concise", "standard", or "verbose" (default: "standard") |
 | `-l, --max-length <words>` | Maximum length in words (default: 500) |
@@ -92,6 +94,12 @@ llmpr -o pr.md
 
 # Concise description
 llmpr --style concise
+
+# Generate a structured code review
+llmpr -r
+
+# Save the review to a file
+llmpr -r -o review.md
 
 # Limit length to 300 words
 llmpr --max-length 300
@@ -119,7 +127,8 @@ The `--create-pr` flag enables an interactive workflow that:
 4. ✅ Allows you to edit the title and description
 5. ✅ Lets you confirm the base branch
 6. ✅ Creates the PR as draft or ready for review
-7. ✅ Displays the PR URL and details
+7. ✅ Prompts to push your branch to origin if needed, then retries PR creation automatically
+8. ✅ Displays the PR URL and details
 
 ### Prerequisites for PR Creation
 
@@ -171,6 +180,13 @@ Add interactive PR creation feature with gh CLI...
 └────────────────────────────────────────────────────────────┘
 
 ℹ Open in browser: https://github.com/user/repo/pull/123
+
+# If the branch is not yet pushed
+✖ Failed to create pull request
+Current branch must be pushed before creating a PR.
+? Push feature/new-feature to origin now? › Yes
+✔ Branch feature/new-feature pushed to origin
+✔ Pull request created successfully!
 ```
 
 ## GitHub Action
