@@ -629,6 +629,30 @@ export function getCurrentBranch(): Promise<string> {
 }
 
 /**
+ * Push the current branch to origin with upstream tracking
+ */
+export function pushBranchToRemote(branch: string): Promise<void> {
+	const spinner = ora({
+		text: `Pushing ${colors.highlight(branch)} to origin...`,
+		spinner: 'dots'
+	}).start()
+
+	const sanitizedBranch = branch.replace(/"/g, '\\"')
+
+	return new Promise((resolve, reject) => {
+		exec(`git push --set-upstream origin "${sanitizedBranch}"`, (err, _stdout, stderr) => {
+			if (err) {
+				spinner.fail('Failed to push branch')
+				reject(new Error(stderr || err.message))
+				return
+			}
+			spinner.succeed(`Branch ${colors.highlight(branch)} pushed to origin`)
+			resolve()
+		})
+	})
+}
+
+/**
  * Get suggested PR title from recent commits
  */
 export function getSuggestedTitle(): Promise<string> {
@@ -718,6 +742,14 @@ export async function createPullRequest(title: string, body: string, base: strin
 			child.stdin.end()
 		}
 	})
+}
+
+function requiresBranchPush(errorMessage: string): boolean {
+	const normalized = errorMessage.toLowerCase()
+	return normalized.includes('must first push') ||
+		normalized.includes('--head flag') ||
+		normalized.includes('set the remote') ||
+		normalized.includes('no upstream')
 }
 
 /**
@@ -908,35 +940,69 @@ export async function interactivePRCreation(generatedDescription: string): Promi
 		? response.description
 		: generatedDescription
 
-	// Create the PR
-	try {
-		const prUrl = await createPullRequest(
-			response.title,
-			finalDescription,
-			response.base,
-			response.draft
-		)
+	// Create the PR (retry once if branch needs to be pushed)
+	let prUrl: string | undefined
+	while (!prUrl) {
+		try {
+			prUrl = await createPullRequest(
+				response.title,
+				finalDescription,
+				response.base,
+				response.draft
+			)
+		} catch (error: unknown) {
+			const errorMessage = error instanceof Error ? error.message : String(error)
+			if (requiresBranchPush(errorMessage)) {
+				logger.warning('Current branch must be pushed before creating a PR.')
+				const pushResponse = await prompts({
+					type: 'confirm',
+					name: 'push',
+					message: `Push ${currentBranch} to origin now?`,
+					initial: true
+				})
 
-		// Display success with PR details
-		logger.divider()
-		logger.success('Pull Request Created!')
-		logger.divider()
+				if (!pushResponse.push) {
+					logger.warning('PR creation cancelled. Push your branch and rerun the command.')
+					process.exit(1)
+				}
 
-		logger.box(`
+				try {
+					await pushBranchToRemote(currentBranch)
+				} catch (pushError) {
+					const pushMessage = pushError instanceof Error ? pushError.message : String(pushError)
+					logger.error(`Failed to push ${colors.highlight(currentBranch)}: ${pushMessage}`)
+					process.exit(1)
+				}
+
+				// After pushing successfully, retry PR creation
+				continue
+			}
+
+			logger.error(`Failed to create PR: ${errorMessage}`)
+			process.exit(1)
+		}
+	}
+
+	if (!prUrl) {
+		logger.error('Failed to create PR for an unknown reason.')
+		process.exit(1)
+	}
+
+	// Display success with PR details
+	logger.divider()
+	logger.success('Pull Request Created!')
+	logger.divider()
+
+	logger.box(`
 ${colors.subheading('Title:')} ${response.title}
 
 ${colors.subheading('Base Branch:')} ${response.base}
 ${colors.subheading('Status:')} ${response.draft ? colors.warning('Draft') : colors.success('Ready for Review')}
 
 ${colors.subheading('URL:')} ${colors.secondary(prUrl)}
-		`.trim(), 'PR Details')
+	`.trim(), 'PR Details')
 
-		logger.info(`Open in browser: ${colors.highlight(prUrl)}`)
-	} catch (error: unknown) {
-		const errorMessage = error instanceof Error ? error.message : String(error)
-		logger.error(`Failed to create PR: ${errorMessage}`)
-		process.exit(1)
-	}
+	logger.info(`Open in browser: ${colors.highlight(prUrl)}`)
 }
 
 function buildPrDescriptionPrompt(diff: string, dirStructure: string): string {
