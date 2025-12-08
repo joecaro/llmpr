@@ -681,22 +681,10 @@ export function getSuggestedTitle(): Promise<string> {
 					const areaSummary = summarizeChangedAreas(changedFiles)
 					const commitSummary = summarizeCommitSubjects(commits)
 
-					if (areaSummary && commitSummary) {
-						resolve(`${areaSummary}: ${commitSummary}`)
-						return
-					}
+					const baseTitle = buildBaseTitle(areaSummary, commitSummary)
+					const llmTitle = await compressTitleWithLLM(baseTitle, changedFiles)
 
-					if (areaSummary) {
-						resolve(areaSummary)
-						return
-					}
-
-					if (commitSummary) {
-						resolve(commitSummary)
-						return
-					}
-
-					resolve('Update changes')
+					resolve(llmTitle || baseTitle || 'Update changes')
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error)
 					reject(new Error(`Error building suggested title: ${message}`))
@@ -861,6 +849,34 @@ function titleCase(text: string): string {
 		.split(/[-_\s]+/)
 		.map(word => word.charAt(0).toUpperCase() + word.slice(1))
 		.join(' ')
+}
+
+function buildBaseTitle(areaSummary?: string, commitSummary?: string): string {
+	if (areaSummary && commitSummary) return `${areaSummary}: ${commitSummary}`
+	if (areaSummary) return areaSummary
+	if (commitSummary) return commitSummary
+	return 'Update changes'
+}
+
+async function compressTitleWithLLM(baseTitle: string, changedFiles: string[]): Promise<string | undefined> {
+	// Keep prompt minimal to encourage a very short title
+	const prompt = `
+You write extremely short PR titles (6-8 words max).
+Return only the title text, no quotes, no punctuation at the end.
+
+Context:
+- Base title: ${baseTitle}
+- Key areas: ${changedFiles.slice(0, 6).join(', ') || 'n/a'}
+`.trim()
+
+	try {
+		const apiKey = getApiKey()
+		const response = await callOpenAI(apiKey, prompt)
+		return response.data.choices[0]?.message?.content?.trim()
+	} catch {
+		// Fallback to base title on any API issue
+		return undefined
+	}
 }
 
 /**
