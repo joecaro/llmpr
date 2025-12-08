@@ -79,7 +79,7 @@ const logger = {
 program
 	.version(VERSION)
 	.option('-b, --base <branch>', 'base branch to compare against', 'main')
-	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-5')
+	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-5.1')
 	.option('-o, --output <file>', 'output file for PR description')
 	.option('-r, --review', 'generate a structured code review instead of a PR description')
 	.option('-v, --verbose', 'show detailed logs and API responses')
@@ -179,29 +179,39 @@ export function getGitDiff(): Promise<string> {
 	}).start()
 
 	return new Promise((resolve, reject) => {
-		exec(`git diff ${options.base}`, (err, stdout, stderr) => {
-			if (err) {
+		getMergeBase(options.base)
+			.then(mergeBase => {
+				exec(`git diff ${mergeBase}..HEAD`, (err, stdout, stderr) => {
+					if (err) {
+						spinner.fail()
+						reject(new Error(`Error getting git diff: ${stderr || err.message}`))
+						return
+					}
+					spinner.succeed(`Diff against ${colors.highlight(options.base)} successfully retrieved`)
+					resolve(stdout)
+				})
+			})
+			.catch(error => {
 				spinner.fail()
-				// Wrap in an Error object so error.message is set
-				reject(new Error(`Error getting git diff: ${stderr || err.message}`))
-				return
-			}
-			spinner.succeed(`Diff against ${colors.highlight(options.base)} successfully retrieved`)
-			resolve(stdout)
-		})
+				reject(error)
+			})
 	})
 }
 
 export function getChangedFiles(): Promise<string[]> {
 	return new Promise((resolve, reject) => {
-		exec(`git diff --name-only ${options.base}`, (err, stdout, stderr) => {
-			if (err) {
-				reject(new Error(`Error getting changed files: ${stderr || err.message}`))
-				return
-			}
-			// Return list of changed file paths
-			resolve(stdout.trim().split('\n').filter(line => line.trim() !== ''))
-		})
+		getMergeBase(options.base)
+			.then(mergeBase => {
+				exec(`git diff --name-only ${mergeBase}..HEAD`, (err, stdout, stderr) => {
+					if (err) {
+						reject(new Error(`Error getting changed files: ${stderr || err.message}`))
+						return
+					}
+					// Return list of changed file paths
+					resolve(stdout.trim().split('\n').filter(line => line.trim() !== ''))
+				})
+			})
+			.catch(error => reject(error))
 	})
 }
 
@@ -657,28 +667,32 @@ export function pushBranchToRemote(branch: string): Promise<void> {
  */
 export function getSuggestedTitle(): Promise<string> {
 	return new Promise((resolve, reject) => {
-		exec(`git log ${options.base}..HEAD --pretty=format:"%s" --no-merges`, (err, stdout, stderr) => {
-			if (err) {
-				reject(new Error(`Error getting commit messages: ${stderr || err.message}`))
-				return
-			}
+		getMergeBase(options.base)
+			.then(async mergeBase => {
+				try {
+					const commits = await getCommitSubjects(mergeBase)
+					const changedFiles = await getChangedFiles()
 
-			const commits = stdout.trim().split('\n').filter(line => line.trim() !== '')
+					if (commits.length === 0 && changedFiles.length === 0) {
+						resolve('Update changes')
+						return
+					}
 
-			if (commits.length === 0) {
-				resolve('Update changes')
-				return
-			}
+					const areaSummary = summarizeChangedAreas(changedFiles)
+					const commitSummary = summarizeCommitSubjects(commits)
 
-			// If only one commit, use its message
-			if (commits.length === 1) {
-				resolve(commits[0])
-				return
-			}
+					const baseTitle = buildBaseTitle(areaSummary, commitSummary)
+					const llmTitle = await compressTitleWithLLM(baseTitle, changedFiles)
 
-			// If multiple commits, try to find a common theme or use the first one
-			resolve(commits[0])
-		})
+					resolve(llmTitle || baseTitle || 'Update changes')
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error)
+					reject(new Error(`Error building suggested title: ${message}`))
+				}
+			})
+			.catch(error => {
+				reject(error instanceof Error ? error : new Error(String(error)))
+			})
 	})
 }
 
@@ -750,6 +764,119 @@ function requiresBranchPush(errorMessage: string): boolean {
 		normalized.includes('--head flag') ||
 		normalized.includes('set the remote') ||
 		normalized.includes('no upstream')
+}
+
+/**
+ * Get merge base between base branch and HEAD
+ */
+function getMergeBase(baseBranch: string): Promise<string> {
+	return new Promise((resolve, reject) => {
+		exec(`git merge-base ${baseBranch} HEAD`, (err, stdout, stderr) => {
+			if (err) {
+				reject(new Error(`Error finding merge-base with ${baseBranch}: ${stderr || err.message}`))
+				return
+			}
+			resolve(stdout.trim())
+		})
+	})
+}
+
+/**
+ * Get commit subjects from merge-base to HEAD (no merges)
+ */
+function getCommitSubjects(mergeBase: string): Promise<string[]> {
+	return new Promise((resolve, reject) => {
+		exec(`git log ${mergeBase}..HEAD --pretty=format:"%s" --no-merges`, (err, stdout, stderr) => {
+			if (err) {
+				reject(new Error(`Error getting commit messages: ${stderr || err.message}`))
+				return
+			}
+			const commits = stdout.trim().split('\n').filter(line => line.trim() !== '')
+			resolve(commits)
+		})
+	})
+}
+
+/**
+ * Build a short area-based summary from changed files
+ */
+function summarizeChangedAreas(changedFiles: string[]): string | undefined {
+	if (!changedFiles || changedFiles.length === 0) return undefined
+
+	const areaCounts: Record<string, number> = {}
+
+	changedFiles.forEach(file => {
+		const area = file.includes('/') ? file.split('/')[0] : 'root files'
+		areaCounts[area] = (areaCounts[area] || 0) + 1
+	})
+
+	const sortedAreas = Object.entries(areaCounts)
+		.sort((a, b) => b[1] - a[1])
+		.map(([area]) => area)
+
+	if (sortedAreas.length === 1) {
+		return `Update ${titleCase(sortedAreas[0])}`
+	}
+
+	const primary = titleCase(sortedAreas[0])
+	const secondary = titleCase(sortedAreas[1])
+	return `${primary} & ${secondary} updates`
+}
+
+/**
+ * Build a concise summary from commit subjects
+ */
+function summarizeCommitSubjects(commits: string[]): string | undefined {
+	if (!commits || commits.length === 0) return undefined
+
+	// Normalize conventional commit prefixes to focus on the message
+	const cleaned = commits.map(c => {
+		const match = c.match(/^[a-z]+(?:\([^)]+\))?:\s*(.*)$/i)
+		return match ? match[1].trim() : c.trim()
+	})
+
+	if (cleaned.length === 1) {
+		return cleaned[0]
+	}
+
+	// Take top two unique phrases to avoid overly long titles
+	const unique = Array.from(new Set(cleaned)).slice(0, 2)
+	return unique.join(' • ')
+}
+
+function titleCase(text: string): string {
+	return text
+		.split(/[-_\s]+/)
+		.map(word => word.charAt(0).toUpperCase() + word.slice(1))
+		.join(' ')
+}
+
+function buildBaseTitle(areaSummary?: string, commitSummary?: string): string {
+	if (areaSummary && commitSummary) return `${areaSummary}: ${commitSummary}`
+	if (areaSummary) return areaSummary
+	if (commitSummary) return commitSummary
+	return 'Update changes'
+}
+
+async function compressTitleWithLLM(baseTitle: string, changedFiles: string[]): Promise<string | undefined> {
+	// Keep prompt minimal to encourage a very short title
+	const prompt = `
+You write extremely short PR titles (6-8 words max).
+Return only the title text, no quotes, no punctuation at the end.
+
+Context:
+- Base title: ${baseTitle}
+- Key areas: ${changedFiles.slice(0, 6).join(', ') || 'n/a'}
+`.trim()
+
+	try {
+		const apiKey = getApiKey()
+		const response = await callOpenAI(apiKey, prompt)
+		return response.data.choices[0]?.message?.content?.trim()
+	} catch {
+		// Fallback to base title on any API issue
+		return undefined
+	}
 }
 
 /**
