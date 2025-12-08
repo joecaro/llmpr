@@ -79,7 +79,7 @@ const logger = {
 program
 	.version(VERSION)
 	.option('-b, --base <branch>', 'base branch to compare against', 'main')
-	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-5')
+	.option('-m, --model <model>', 'OpenAI model to use', 'gpt-5.1')
 	.option('-o, --output <file>', 'output file for PR description')
 	.option('-r, --review', 'generate a structured code review instead of a PR description')
 	.option('-v, --verbose', 'show detailed logs and API responses')
