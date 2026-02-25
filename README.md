@@ -2,18 +2,22 @@
 
 > AI-powered Pull Request descriptions with one command
 
-LLMPR generates professional PR descriptions—and now structured code reviews—from your Git changes using OpenAI's language models.
+LLMPR generates professional PR descriptions—and structured code reviews—from your Git changes using your choice of LLM: OpenAI, Anthropic (Claude), or any OpenAI-compatible API (e.g. Ollama, Together).
 
 ## Features
 
-- 🔄 **Git Integration**: Analyzes your current branch changes
-- 🎨 **Two Styles**: Choose concise or verbose descriptions
+- 🔄 **Git Integration**: Analyzes your current branch changes (large diffs are truncated automatically)
+- 🤖 **Multiple Providers**: Use OpenAI, Anthropic, or any OpenAI-compatible endpoint
+- ⚙️ **Config Files**: Set defaults in `.llmprrc.json` or `~/.config/llmpr/config.json`
+- 🎨 **Three Styles**: Choose concise, standard, or verbose descriptions
 - 📊 **Smart Visualizations**: Generates diagrams and code comparisons when needed
 - 🔍 **Context-Aware**: Can request specific file contents for better understanding
 - 📁 **Directory Visualization**: Shows repository structure with focus on changed files
 - 📏 **Customizable Length**: Control the maximum size of your PR descriptions
+- 📝 **Custom Templates**: Use `--template` with placeholders for your own prompt
 - 🚀 **Interactive PR Creation**: Create GitHub PRs directly from the CLI with interactive prompts
 - 🧠 **AI Review Mode**: Request a structured Good/Bad/Suggestions/Critical review of your diff
+- 🔎 **Dry Run**: Preview the prompt without calling the LLM (`--dry-run`)
 
 ## Installation
 
@@ -35,15 +39,21 @@ npm install -g .
 
 ## Prerequisites
 
-You need to have an OpenAI API key. You can get one from [OpenAI's website](https://platform.openai.com/).
+You need an API key for at least one supported provider. By default LLMPR uses OpenAI.
 
-Set your API key as an environment variable:
+| Provider | Env variable(s) | Notes |
+|----------|------------------|--------|
+| **OpenAI** (default) | `OPENAI_API_KEY` | [Get a key](https://platform.openai.com/) |
+| **Anthropic** (Claude) | `ANTHROPIC_API_KEY` | [Get a key](https://console.anthropic.com/) |
+| **OpenAI-compatible** | `LLM_API_KEY`, optionally `LLM_BASE_URL` | For Ollama, Together, local endpoints, etc. |
+
+Example (OpenAI):
 
 ```bash
 export OPENAI_API_KEY=your_api_key
 ```
 
-Or add it to your shell profile for persistence (e.g., ~/.bash_profile, ~/.zshrc):
+Or add it to your shell profile for persistence (e.g. `~/.zshrc`):
 
 ```bash
 echo 'export OPENAI_API_KEY=your_api_key' >> ~/.zshrc
@@ -52,7 +62,7 @@ source ~/.zshrc
 
 ## Quick Start
 
-1. Set your OpenAI API key:
+1. Set an API key for your chosen provider (e.g. OpenAI):
    ```bash
    export OPENAI_API_KEY=your_api_key
    ```
@@ -73,13 +83,17 @@ llmpr [options]
 | Option | Description |
 |--------|-------------|
 | `-b, --base <branch>` | Base branch to compare against (default: "main") |
-| `-m, --model <model>` | OpenAI model to use (default: "gpt-5") |
+| `-m, --model <model>` | LLM model to use (default: "gpt-5.1") |
 | `-o, --output <file>` | Save PR description to file |
 | `-r, --review` | Generate a structured code review instead of a PR description |
 | `-v, --verbose` | Show detailed logs and API responses |
 | `-s, --style <style>` | PR style: "concise", "standard", or "verbose" (default: "standard") |
 | `-l, --max-length <words>` | Maximum length in words (default: 500) |
 | `-c, --create-pr` | Create a GitHub PR after generating description (interactive) |
+| `-p, --provider <provider>` | LLM provider: "openai", "anthropic", or "openai-compatible" (default: "openai") |
+| `-t, --template <file>` | Custom prompt template file (see [Custom templates](#custom-templates)) |
+| `--dry-run` | Show the prompt that would be sent without calling the LLM |
+| `-gh, --github-config` | Check GitHub CLI auth and repo access, then exit |
 | `-h, --help` | Display help |
 | `-V, --version` | Display version |
 
@@ -104,8 +118,24 @@ llmpr -r -o review.md
 # Limit length to 300 words
 llmpr --max-length 300
 
-# Use specific OpenAI model
+# Use specific model
 llmpr --model gpt-4-turbo
+
+# Use Anthropic (Claude)
+llmpr --provider anthropic --model claude-sonnet-4-20250514
+
+# Use OpenAI-compatible endpoint (e.g. Ollama)
+export LLM_BASE_URL=http://localhost:11434/v1
+llmpr --provider openai-compatible --model llama3.2
+
+# Preview prompt without calling the LLM
+llmpr --dry-run
+
+# Custom prompt template
+llmpr --template ./my-pr-prompt.md
+
+# Check GitHub CLI and repo access
+llmpr --github-config
 
 # Generate description and create PR interactively
 llmpr --create-pr
@@ -116,6 +146,41 @@ llmpr --base develop --create-pr
 # Combine options for complete workflow
 llmpr --base develop --style verbose --create-pr
 ```
+
+## Configuration
+
+Defaults can be set via config files. CLI options override config.
+
+- **Project**: `.llmprrc.json` in the repo root  
+- **User**: `~/.config/llmpr/config.json`
+
+Example `.llmprrc.json`:
+
+```json
+{
+  "base": "main",
+  "model": "gpt-4o",
+  "style": "standard",
+  "maxLength": "500",
+  "provider": "openai"
+}
+```
+
+Supported keys: `base`, `model`, `style`, `maxLength`, `provider`, `verbose`.
+
+## Custom templates
+
+Use `-t, --template <file>` to supply your own prompt. The file can use these placeholders:
+
+| Placeholder | Replaced with |
+|-------------|----------------|
+| `{{diff}}` | Git diff against base branch |
+| `{{dirStructure}}` | Repository tree (focused on changed files) |
+| `{{style}}` | Current style (concise / standard / verbose) |
+| `{{maxLength}}` | Max length in words |
+| `{{base}}` | Base branch name |
+
+The LLM will receive the result as the system/user prompt. Use this for team-specific formats or extra instructions.
 
 ## Interactive PR Creation
 
@@ -195,7 +260,7 @@ LLMPR can automatically generate PR descriptions when PRs are created or on dema
 
 ### Setup
 
-1. Add your OpenAI API key to GitHub Secrets as `OPENAI_API_KEY`
+1. Add your LLM API key to GitHub Secrets (e.g. `OPENAI_API_KEY` for the default provider, or `ANTHROPIC_API_KEY` if using `--provider anthropic`).
 2. Create a workflow file at `.github/workflows/pr-description.yml`:
 
 ```yaml
