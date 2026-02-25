@@ -7,7 +7,10 @@ import type { CliOptions } from './types.js'
 export function buildPrDescriptionPrompt(diff: string, dirStructure: string, options: CliOptions): string {
 	return `
 You are an assistant that helps write PR descriptions.
-The diff from my branch compared to ${options.base} is:
+
+**Diff interpretation (important):** The diff below shows ONLY the changes on the current branch since it diverged from ${options.base} (merge-base to HEAD). It does NOT include changes that were added to ${options.base} after the branch was created. In the diff: lines prefixed with \`-\` were REMOVED on this branch; lines prefixed with \`+\` were ADDED on this branch. Do not describe content that exists only on ${options.base} (e.g. additions that landed on ${options.base} after branching) as if it were removed or deleted on this branch. Describe only what this branch actually changed.
+
+The diff is:
 ${diff}
 
 The repository structure is:
@@ -85,7 +88,9 @@ export function buildReviewPrompt(diff: string, dirStructure: string, options: C
 	return `
 You are a senior software engineer performing a rigorous peer review.
 
-The diff from my branch compared to ${options.base} is:
+**Diff interpretation (important):** The diff below shows ONLY the changes on the current branch since it diverged from ${options.base} (merge-base to HEAD). It does NOT include changes that were added to ${options.base} after the branch was created. In the diff: lines prefixed with \`-\` were REMOVED on this branch; lines prefixed with \`+\` were ADDED on this branch. Do not treat content that exists only on ${options.base} (e.g. additions that landed on ${options.base} after branching) as if it were removed or deleted on this branch. Review only what this branch actually changed.
+
+The diff is:
 ${diff}
 
 The repository structure is:

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { writeFileSync, readFileSync } from 'fs'
+import { writeFileSync, readFileSync, realpathSync } from 'fs'
+import { pathToFileURL, fileURLToPath } from 'url'
 import { parseArgs, CLI_DEFAULTS } from './cli.js'
 import { loadConfig, mergeConfigWithDefaults } from './config.js'
 import { getGitDiff, getChangedFiles, getDirectoryStructure, truncateDiff } from './git.js'
@@ -73,6 +74,14 @@ async function handleGithubConfig(options: CliOptions): Promise<void> {
 }
 
 export async function main(argv?: string[]) {
+	const args = argv ?? process.argv.slice()
+	const firstArg = args[2]
+	if (firstArg === 'config') {
+		const { runConfigSetup } = await import('./config-setup.js')
+		await runConfigSetup()
+		return
+	}
+
 	const cliOptions = parseArgs(argv)
 	const config = loadConfig()
 	const options = mergeConfigWithDefaults(cliOptions, config, CLI_DEFAULTS)
@@ -197,10 +206,21 @@ export async function main(argv?: string[]) {
 	}
 }
 
-// ESM-compatible main module check
-const isMainModule = process.argv[1] && import.meta.url === `file://${process.argv[1]}`
+// ESM-compatible main module check (handles symlinks and path normalization)
+function isMainModule(): boolean {
+	const scriptPath = process.argv[1]
+	if (!scriptPath) return false
+	try {
+		const modulePath = fileURLToPath(import.meta.url)
+		const moduleReal = realpathSync(modulePath)
+		const scriptReal = realpathSync(scriptPath)
+		return moduleReal === scriptReal
+	} catch {
+		return pathToFileURL(scriptPath).href === import.meta.url
+	}
+}
 
-if (isMainModule) {
+if (isMainModule()) {
 	logger.info('Starting LLMPR...')
 	main().catch(error => {
 		logger.error(`An error occurred: ${error.message}`)
