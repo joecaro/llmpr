@@ -94,6 +94,7 @@ llmpr [options]
 | `-t, --template <file>` | Custom prompt template file (see [Custom templates](#custom-templates)) |
 | `--dry-run` | Show the prompt that would be sent without calling the LLM |
 | `-gh, --github-config` | Check GitHub CLI auth and repo access, then exit |
+| `config` | Interactive setup for provider and model (see [Configuration](#configuration)) |
 | `-h, --help` | Display help |
 | `-V, --version` | Display version |
 
@@ -134,6 +135,9 @@ llmpr --dry-run
 # Custom prompt template
 llmpr --template ./my-pr-prompt.md
 
+# Interactive config setup (provider + model)
+llmpr config
+
 # Check GitHub CLI and repo access
 llmpr --github-config
 
@@ -153,6 +157,20 @@ Defaults can be set via config files. CLI options override config.
 
 - **Project**: `.llmprrc.json` in the repo root  
 - **User**: `~/.config/llmpr/config.json`
+
+### Interactive setup: `llmpr config`
+
+Run the config wizard to create or update a config file with prompts for provider and model:
+
+```bash
+llmpr config
+```
+
+You’ll be asked:
+
+1. **Default provider?** — OpenAI, Anthropic (Claude), or OpenAI-compatible
+2. **Default model?** — List depends on provider (e.g. gpt-5.2, gpt-5.1, gpt-5-mini for OpenAI; claude-sonnet-4-20250514, etc. for Anthropic)
+3. **Save config to** — This project (`.llmprrc.json`) or user config (`~/.config/llmpr/config.json`)
 
 Example `.llmprrc.json`:
 

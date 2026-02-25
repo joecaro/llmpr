@@ -30,7 +30,8 @@ export const CLI_DEFAULTS: Record<string, unknown> = {
  */
 export function parseArgs(argv: string[] = process.argv): CliOptions {
 	const program = new Command()
-	program.version(VERSION)
+	program
+		.version(VERSION)
 		.option('-b, --base <branch>', 'base branch to compare against', 'main')
 		.option('-m, --model <model>', 'LLM model to use', 'gpt-5.1')
 		.option('-o, --output <file>', 'output file for PR description')
@@ -52,6 +53,9 @@ Provider options:
   - openai: OpenAI API (requires OPENAI_API_KEY)
   - anthropic: Anthropic Claude API (requires ANTHROPIC_API_KEY)
   - openai-compatible: Any OpenAI-compatible endpoint (uses LLM_API_KEY, LLM_BASE_URL)
+
+Commands:
+  config    Set up provider and model defaults interactively
 `)
 		.parse(argv)
 

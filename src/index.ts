@@ -74,6 +74,14 @@ async function handleGithubConfig(options: CliOptions): Promise<void> {
 }
 
 export async function main(argv?: string[]) {
+	const args = argv ?? process.argv.slice()
+	const firstArg = args[2]
+	if (firstArg === 'config') {
+		const { runConfigSetup } = await import('./config-setup.js')
+		await runConfigSetup()
+		return
+	}
+
 	const cliOptions = parseArgs(argv)
 	const config = loadConfig()
 	const options = mergeConfigWithDefaults(cliOptions, config, CLI_DEFAULTS)
