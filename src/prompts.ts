@@ -52,6 +52,47 @@ function computeDiffStats(diff: string): DiffStats {
 	return stats
 }
 
+function classifyImpact(stats: DiffStats): string {
+	const { newFiles, modifiedFiles, deletedFiles, insertions, deletions } = stats
+	const totalFiles = newFiles.length + modifiedFiles.length + deletedFiles.length
+	if (totalFiles === 0) return 'No changes detected.'
+
+	const newFileRatio = newFiles.length / totalFiles
+	const modifiedRatio = modifiedFiles.length / totalFiles
+	const deletedRatio = deletedFiles.length / totalFiles
+	const churnRatio = insertions + deletions > 0 ? deletions / (insertions + deletions) : 0
+
+	// Mostly new files, very little modification to existing code
+	if (newFileRatio >= 0.8 && modifiedFiles.length <= 1) {
+		return 'Mostly new code — minimal risk to existing functionality.'
+	}
+	// All new files
+	if (newFileRatio === 1) {
+		return 'Entirely new code — no existing code modified.'
+	}
+	// Heavy deletion / removal
+	if (deletedRatio >= 0.5) {
+		return 'Significant removal of existing code — verify nothing relied on deleted files.'
+	}
+	// Heavy churn in existing files
+	if (modifiedRatio >= 0.7 && churnRatio >= 0.4) {
+		return 'Heavy refactor of existing code — review carefully for regressions.'
+	}
+	// Moderate mix
+	if (modifiedRatio >= 0.5) {
+		return 'Moderate changes to existing code — some regression risk.'
+	}
+	// Mostly additive with some existing touches
+	if (newFileRatio >= 0.5) {
+		return 'Primarily new code with minor changes to existing files.'
+	}
+	// Small, focused edits
+	if (totalFiles <= 3 && insertions + deletions < 50) {
+		return 'Small, focused change — low risk.'
+	}
+	return 'Mixed new and modified code — review modified files for regressions.'
+}
+
 function formatDiffStats(stats: DiffStats): string {
 	const totalLines = stats.insertions + stats.deletions
 	const newPct = totalLines > 0 ? ((stats.insertions / totalLines) * 100).toFixed(1) : '0'
@@ -62,7 +103,7 @@ function formatDiffStats(stats: DiffStats): string {
 - ~${newPct}% additions, ~${modPct}% deletions`
 
 	if (stats.newFiles.length > 0) {
-		summary += `\n- ${stats.newFiles.length} new files (~${stats.newFiles.length === stats.filesChanged ? '100' : ((stats.newFiles.length / stats.filesChanged) * 100).toFixed(0)}% of changes are new code)`
+		summary += `\n- ${stats.newFiles.length} new files`
 	}
 	if (stats.deletedFiles.length > 0) {
 		summary += `\n- ${stats.deletedFiles.length} deleted files`
@@ -70,6 +111,8 @@ function formatDiffStats(stats: DiffStats): string {
 	if (stats.modifiedFiles.length > 0) {
 		summary += `\n- ${stats.modifiedFiles.length} modified files`
 	}
+
+	summary += `\n- **Impact:** ${classifyImpact(stats)}`
 
 	return summary
 }
