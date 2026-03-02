@@ -4,8 +4,81 @@
 
 import type { CliOptions } from './types.js'
 
+interface DiffStats {
+	filesChanged: number
+	insertions: number
+	deletions: number
+	newFiles: string[]
+	modifiedFiles: string[]
+	deletedFiles: string[]
+}
+
+function computeDiffStats(diff: string): DiffStats {
+	const stats: DiffStats = {
+		filesChanged: 0,
+		insertions: 0,
+		deletions: 0,
+		newFiles: [],
+		modifiedFiles: [],
+		deletedFiles: [],
+	}
+
+	const fileHeaders = diff.match(/^diff --git a\/.+ b\/.+$/gm) || []
+	stats.filesChanged = fileHeaders.length
+
+	for (const line of diff.split('\n')) {
+		if (line.startsWith('+') && !line.startsWith('+++')) {
+			stats.insertions++
+		} else if (line.startsWith('-') && !line.startsWith('---')) {
+			stats.deletions++
+		}
+	}
+
+	const diffSections = diff.split(/^diff --git /m).filter(Boolean)
+	for (const section of diffSections) {
+		const fileMatch = section.match(/a\/(.+?) b\//)
+		if (!fileMatch) continue
+		const filePath = fileMatch[1]
+
+		if (section.includes('new file mode')) {
+			stats.newFiles.push(filePath)
+		} else if (section.includes('deleted file mode')) {
+			stats.deletedFiles.push(filePath)
+		} else {
+			stats.modifiedFiles.push(filePath)
+		}
+	}
+
+	return stats
+}
+
+function formatDiffStats(stats: DiffStats): string {
+	const totalLines = stats.insertions + stats.deletions
+	const newPct = totalLines > 0 ? ((stats.insertions / totalLines) * 100).toFixed(1) : '0'
+	const modPct = totalLines > 0 ? ((stats.deletions / totalLines) * 100).toFixed(1) : '0'
+
+	let summary = `**PR Scope Summary:**
+- ${stats.filesChanged} files changed (+${stats.insertions} / -${stats.deletions} lines)
+- ~${newPct}% additions, ~${modPct}% deletions`
+
+	if (stats.newFiles.length > 0) {
+		summary += `\n- ${stats.newFiles.length} new files (~${stats.newFiles.length === stats.filesChanged ? '100' : ((stats.newFiles.length / stats.filesChanged) * 100).toFixed(0)}% of changes are new code)`
+	}
+	if (stats.deletedFiles.length > 0) {
+		summary += `\n- ${stats.deletedFiles.length} deleted files`
+	}
+	if (stats.modifiedFiles.length > 0) {
+		summary += `\n- ${stats.modifiedFiles.length} modified files`
+	}
+
+	return summary
+}
+
 export function buildPrDescriptionPrompt(diff: string, dirStructure: string, options: CliOptions): string {
+	const stats = computeDiffStats(diff)
 	return `
+${formatDiffStats(stats)}
+
 You are an assistant that helps write PR descriptions.
 
 **Diff interpretation (important):** The diff below shows ONLY the changes on the current branch since it diverged from ${options.base} (merge-base to HEAD). It does NOT include changes that were added to ${options.base} after the branch was created. In the diff: lines prefixed with \`-\` were REMOVED on this branch; lines prefixed with \`+\` were ADDED on this branch. Do not describe content that exists only on ${options.base} (e.g. additions that landed on ${options.base} after branching) as if it were removed or deleted on this branch. Describe only what this branch actually changed.
@@ -48,6 +121,8 @@ ${options.style === 'verbose'
 - Use visual separation (horizontal rules, headings) to organize sections logically`
 	: ``}
 
+**Important:** Include the PR Scope Summary (shown above) at the very top of the PR description so reviewers can quickly gauge the size and nature of the changes.
+
 The PR description should be in markdown format.
 
 The PR description should be no more than ${options.maxLength} words.
@@ -85,7 +160,10 @@ If you need to see the contents of any specific file to better understand the ch
 }
 
 export function buildReviewPrompt(diff: string, dirStructure: string, options: CliOptions): string {
+	const stats = computeDiffStats(diff)
 	return `
+${formatDiffStats(stats)}
+
 You are a senior software engineer performing a rigorous peer review.
 
 **Diff interpretation (important):** The diff below shows ONLY the changes on the current branch since it diverged from ${options.base} (merge-base to HEAD). It does NOT include changes that were added to ${options.base} after the branch was created. In the diff: lines prefixed with \`-\` were REMOVED on this branch; lines prefixed with \`+\` were ADDED on this branch. Do not treat content that exists only on ${options.base} (e.g. additions that landed on ${options.base} after branching) as if it were removed or deleted on this branch. Review only what this branch actually changed.
