@@ -25,6 +25,39 @@ function gitExec(args: string[]): Promise<string> {
 }
 
 /**
+ * Resolve which ref to use when comparing against a base branch.
+ *
+ * If you pass `main` but local `main` is behind (never pulled), `merge-base(main, HEAD)` can be
+ * an old ancestor. Then `diff merge-base..HEAD` incorrectly includes commits that only exist on
+ * the remote default branch. Preferring `origin/<name>` when present matches what GitHub uses for
+ * PRs after a fetch.
+ *
+ * Use an explicit `origin/main` (or `refs/heads/main`) when you need to override this.
+ */
+export async function resolveComparisonBase(baseBranch: string): Promise<string> {
+	const tryRefs: string[] = []
+
+	if (baseBranch.startsWith('origin/') || baseBranch.startsWith('remotes/')) {
+		tryRefs.push(baseBranch)
+	} else {
+		tryRefs.push(`origin/${baseBranch}`, baseBranch)
+	}
+
+	for (const ref of tryRefs) {
+		try {
+			await gitExec(['rev-parse', '--verify', `${ref}^{commit}`])
+			return ref
+		} catch {
+			// try next candidate
+		}
+	}
+
+	throw new Error(
+		`Unknown base ref "${baseBranch}". Try: git fetch origin, or pass -b/--base with a valid branch or remote ref (e.g. origin/main).`
+	)
+}
+
+/**
  * Get merge base between base branch and HEAD.
  * Results are cached per baseBranch for the lifetime of the process.
  */

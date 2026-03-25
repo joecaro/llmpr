@@ -7,7 +7,7 @@ import { execFile } from 'child_process'
 import ora from 'ora'
 import prompts from 'prompts'
 import { colors, logger } from './ui.js'
-import { getCurrentBranch, pushBranchToRemote, getMergeBase, getChangedFiles, getCommitSubjects, summarizeChangedAreas, summarizeCommitSubjects, buildBaseTitle } from './git.js'
+import { getCurrentBranch, pushBranchToRemote, resolveComparisonBase, getMergeBase, getChangedFiles, getCommitSubjects, summarizeChangedAreas, summarizeCommitSubjects, buildBaseTitle } from './git.js'
 import { compressTitleWithLLM, createProvider } from './llm.js'
 import type { GhAuthStatus, RepoAccess, CliOptions } from './types.js'
 
@@ -189,9 +189,10 @@ function requiresBranchPush(errorMessage: string): boolean {
  * Get suggested PR title from recent commits
  */
 export async function getSuggestedTitle(options: CliOptions): Promise<string> {
-	const mergeBase = await getMergeBase(options.base)
+	const compareRef = await resolveComparisonBase(options.base)
+	const mergeBase = await getMergeBase(compareRef)
 	const commits = await getCommitSubjects(mergeBase)
-	const changedFiles = await getChangedFiles(options.base)
+	const changedFiles = await getChangedFiles(compareRef)
 
 	if (commits.length === 0 && changedFiles.length === 0) {
 		return 'Update changes'

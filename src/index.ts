@@ -4,7 +4,7 @@ import { writeFileSync, readFileSync, realpathSync } from 'fs'
 import { pathToFileURL, fileURLToPath } from 'url'
 import { parseArgs, CLI_DEFAULTS } from './cli.js'
 import { loadConfig, mergeConfigWithDefaults } from './config.js'
-import { getGitDiff, getChangedFiles, getDirectoryStructure, truncateDiff } from './git.js'
+import { resolveComparisonBase, getGitDiff, getChangedFiles, getDirectoryStructure, truncateDiff } from './git.js'
 import { sendPrompt, createProvider } from './llm.js'
 import { buildPrDescriptionPrompt, buildReviewPrompt } from './prompts.js'
 import { checkGhInstalled, checkGhAuth, checkRepoAccess, switchGhAccount, interactivePRCreation } from './github.js'
@@ -103,8 +103,16 @@ export async function main(argv?: string[]) {
 			logger.info(`Provider: ${colors.highlight(options.provider)}`)
 		}
 
+		// Prefer origin/<branch> when it exists so a stale local base ref does not widen the diff
+		const compareRef = await resolveComparisonBase(options.base)
+		if (options.verbose && compareRef !== options.base) {
+			logger.info(
+				`Using ${colors.highlight(compareRef)} for comparison (avoids stale local ${colors.highlight(options.base)})`
+			)
+		}
+
 		// Get diff and directory structure
-		const rawDiff = await getGitDiff(options.base)
+		const rawDiff = await getGitDiff(compareRef)
 		if (rawDiff.trim() === '') {
 			logger.warning(`No changes detected between your branch and ${colors.highlight(options.base)}.`)
 			process.exit(0)
@@ -116,7 +124,7 @@ export async function main(argv?: string[]) {
 			logger.warning('Diff is very large and has been truncated. Some files may be omitted from analysis.')
 		}
 
-		const changedFiles = await getChangedFiles(options.base)
+		const changedFiles = await getChangedFiles(compareRef)
 		const dirStructure = getDirectoryStructure(process.cwd(), changedFiles)
 
 		// Build the prompt - support custom template
